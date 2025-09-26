@@ -24,6 +24,7 @@ extension ExperimentalFeaturesView
             self.sortedFeatures = ExperimentalFeatures.shared.allFeatures.sorted { (featureA, featureB) in
                 return String(describing: featureA.name) < String(describing: featureB.name)
             }
+            .filter { $0.settingsKey == ExperimentalFeatures.shared.retroAchievements.settingsKey } // Only show RetroAchievements option
         }
     }
 }
