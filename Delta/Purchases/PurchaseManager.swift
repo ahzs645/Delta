@@ -33,7 +33,7 @@ class PurchaseManager
     {
         #if APP_STORE
         
-        if let storeCountryCode = await Storefront.current?.countryCode, storeCountryCode == "USA"
+        if let storefrontID = await Storefront.current?.id, storefrontID == "143441"
         {
             self._supportsExternalPurchases = true
             
