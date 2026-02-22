@@ -164,6 +164,48 @@ private extension AppDelegate
     func configureAppearance()
     {
         self.window?.tintColor = UIColor.deltaPurple
+
+        let navigationBarAppearance = UINavigationBarAppearance()
+        let toolbarAppearance = UIToolbarAppearance()
+        let tabBarAppearance = UITabBarAppearance()
+
+        if #available(iOS 26, *)
+        {
+            navigationBarAppearance.configureWithTransparentBackground()
+            navigationBarAppearance.backgroundEffect = UIBlurEffect(style: .systemThinMaterial)
+            navigationBarAppearance.shadowColor = .clear
+
+            toolbarAppearance.configureWithTransparentBackground()
+            toolbarAppearance.backgroundEffect = UIBlurEffect(style: .systemThinMaterial)
+            toolbarAppearance.shadowColor = .clear
+
+            tabBarAppearance.configureWithTransparentBackground()
+            tabBarAppearance.backgroundEffect = UIBlurEffect(style: .systemThinMaterial)
+            tabBarAppearance.shadowColor = .clear
+        }
+        else
+        {
+            navigationBarAppearance.configureWithOpaqueBackground()
+            toolbarAppearance.configureWithOpaqueBackground()
+            tabBarAppearance.configureWithOpaqueBackground()
+        }
+
+        navigationBarAppearance.titleTextAttributes = [.foregroundColor: UIColor.label]
+        navigationBarAppearance.largeTitleTextAttributes = [.foregroundColor: UIColor.label]
+
+        UINavigationBar.appearance().tintColor = .deltaPurple
+        UINavigationBar.appearance().standardAppearance = navigationBarAppearance
+        UINavigationBar.appearance().scrollEdgeAppearance = navigationBarAppearance
+        UINavigationBar.appearance().compactAppearance = navigationBarAppearance
+
+        UIToolbar.appearance().tintColor = .deltaPurple
+        UIToolbar.appearance().standardAppearance = toolbarAppearance
+        UIToolbar.appearance().scrollEdgeAppearance = toolbarAppearance
+        UIToolbar.appearance().compactAppearance = toolbarAppearance
+
+        UITabBar.appearance().tintColor = .deltaPurple
+        UITabBar.appearance().standardAppearance = tabBarAppearance
+        UITabBar.appearance().scrollEdgeAppearance = tabBarAppearance
     }
     
     func updateSettings()
@@ -284,4 +326,3 @@ private extension AppDelegate
         CFNotificationCenterPostNotification(center!, CFNotificationName(CFNotificationName.altstoreAppIsRunning.rawValue), nil, nil, true)
     }
 }
-
