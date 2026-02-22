@@ -24,7 +24,7 @@
 	url = git@github.com:rileytestut/N64DeltaCore.git
 [submodule "Cores/MelonDSDeltaCore"]
 	path = Cores/MelonDSDeltaCore
-	url = https://github.com/rileytestut/MelonDSDeltaCore.git
+	url = https://github.com/ahzs645/MelonDSDeltaCore.git
 [submodule "Cores/GPGXDeltaCore"]
 	path = Cores/GPGXDeltaCore
 	url = https://github.com/rileytestut/GPGXDeltaCore.git
