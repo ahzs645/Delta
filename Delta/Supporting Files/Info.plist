@@ -206,9 +206,11 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_altserver._tcp</string>
+		<string>_delta-ds-local._tcp</string>
+		<string>_delta-ds-local._udp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Delta uses the local network to communicate with AltServer and enable JIT.</string>
+	<string>Delta uses the local network to communicate with AltServer, enable JIT, and connect to nearby devices for local multiplayer.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Delta uses your microphone to emulate the Nintendo DS microphone.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

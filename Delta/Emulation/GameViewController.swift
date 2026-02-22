@@ -262,7 +262,9 @@ class GameViewController: DeltaCore.GameViewController
         NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.didDeactivateGyro(with:)), name: GBA.didDeactivateGyroNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.didConnectOnline(with:)), name: MelonDS.didConnectToWFCNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.didDisconnectFromOnline(with:)), name: MelonDS.didDisconnectFromWFCNotification, object: nil)
-        
+
+        self.registerLocalMultiplayerObservers()
+
         NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.emulationDidQuit(with:)), name: EmulatorCore.emulationDidQuitNotification, object: nil)
         
         NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.didEnableJIT(with:)), name: ServerManager.didEnableJITNotification, object: nil)
@@ -600,11 +602,24 @@ extension GameViewController
             {
                 // Saving save states is fine, just not loading them
                 // pauseViewController.saveStateItem = nil
-                
+
                 pauseViewController.loadStateItem = nil
                 pauseViewController.cheatCodesItem = nil
             }
-            
+
+            // Add local multiplayer option for DS games when the feature is enabled
+            if self.game?.type == .ds && ExperimentalFeatures.shared.dsLocalMultiplayer.isEnabled, #available(iOS 15, *)
+            {
+                let isConnected = LocalMultiplayerManager.shared.isConnected
+                let title = isConnected
+                    ? NSLocalizedString("Local Play", comment: "") + " ✓"
+                    : NSLocalizedString("Local Play", comment: "")
+                pauseViewController.localMultiplayerItem = MenuItem(text: title, image: UIImage(systemName: "antenna.radiowaves.left.and.right")!) { [unowned self] item in
+                    self.showLocalMultiplayer()
+                    pauseViewController.dismiss()
+                }
+            }
+
             self.pauseViewController = pauseViewController
             
         default: break
@@ -2427,7 +2442,9 @@ private extension GameViewController
     @objc func emulationDidQuit(with notification: Notification)
     {
         guard let emulatorCore = notification.object as? EmulatorCore, emulatorCore == self.emulatorCore else { return }
-        
+
+        self.disconnectLocalMultiplayerIfNeeded()
+
         DispatchQueue.main.async {
             guard self.presentedViewController == nil else { return }
             

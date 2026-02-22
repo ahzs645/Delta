@@ -82,7 +82,11 @@ struct ExperimentalFeatures: FeatureContainer
              description: "Log in with RetroAchievements to track your progress and achievements in games.",
              options: RetroAchievementsOptions())
     var retroAchievements
-    
+
+    @Feature(name: "DS Local Multiplayer",
+             description: "Play Nintendo DS games locally with a nearby device using peer-to-peer connectivity. Supports both Multi-Card and Download Play modes. No internet connection or server required.")
+    var dsLocalMultiplayer
+
     private init()
     {
         self.prepareFeatures()
