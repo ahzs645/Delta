@@ -708,7 +708,7 @@
 		BFEE943C23F2180200CDA07D /* Delta4ToDelta5.xcmappingmodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcmappingmodel; path = Delta4ToDelta5.xcmappingmodel; sourceTree = "<group>"; };
 		BFEF24F21F7DD4FB00454C62 /* SaveStateMigrationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaveStateMigrationPolicy.swift; sourceTree = "<group>"; };
 		BFFA4C081E8A24D600D87934 /* GameTableViewCell.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = GameTableViewCell.swift; sourceTree = "<group>"; };
-		BFFA71D71AAC406100EE9DD1 /* Delta.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Delta.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BFFA71D71AAC406100EE9DD1 /* Delterr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Delterr.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BFFA71DB1AAC406100EE9DD1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BFFA71DC1AAC406100EE9DD1 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		BFFA71E11AAC406100EE9DD1 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
@@ -1392,7 +1392,7 @@
 		BFFA71D81AAC406100EE9DD1 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				BFFA71D71AAC406100EE9DD1 /* Delta.app */,
+				BFFA71D71AAC406100EE9DD1 /* Delterr.app */,
 				D5D7C1F129E60DFF00663793 /* libDeltaFeatures.a */,
 				D539102F29E88B6B0006B350 /* DeltaPreviews.framework */,
 			);
@@ -1845,8 +1845,8 @@
 				D52CB8C52CE2B7B600B04458 /* RevenueCat */,
 				D5EF1A1F2D84BD59001B06E6 /* rcheevos */,
 			);
-			productName = Delta;
-			productReference = BFFA71D71AAC406100EE9DD1 /* Delta.app */;
+			productName = Delterr;
+			productReference = BFFA71D71AAC406100EE9DD1 /* Delterr.app */;
 			productType = "com.apple.product-type.application";
 		};
 		D539102E29E88B6B0006B350 /* DeltaPreviews */ = {
@@ -2791,8 +2791,9 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 6XVY5G3U44;
+				DEVELOPMENT_TEAM = 6347A46LMY;
 				INFOPLIST_FILE = "Delta/Supporting Files/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Delterr;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -2837,7 +2838,9 @@
 					"\"AuthenticationServices\"",
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" -DDEBUG";
-				PRODUCT_BUNDLE_IDENTIFIER = com.rileytestut.Delta;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ahmadjalil.Delterr;
+				PRODUCT_MODULE_NAME = Delta;
+				PRODUCT_NAME = Delterr;
 				PROVISIONING_PROFILE = "";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				STRIP_INSTALLED_PRODUCT = YES;
@@ -2863,15 +2866,18 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 6XVY5G3U44;
+				DEVELOPMENT_TEAM = 6347A46LMY;
 				INFOPLIST_FILE = "Delta/Supporting Files/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Delterr;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" -DIMPACTOR";
-				PRODUCT_BUNDLE_IDENTIFIER = com.rileytestut.Delta;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ahmadjalil.Delterr;
+				PRODUCT_MODULE_NAME = Delta;
+				PRODUCT_NAME = Delterr;
 				PROVISIONING_PROFILE = "";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				STRIP_INSTALLED_PRODUCT = YES;

@@ -89,6 +89,13 @@ class PauseViewController: UIViewController, PauseInfoProviding
         
         if let gridMenuViewController = self.navigationController?.topViewController as? GridMenuViewController
         {
+            if #available(iOS 26, *)
+            {
+                // Keep both nav buttons in the same style so the centered title doesn't look offset.
+                gridMenuViewController.closeButton.style = .plain
+                gridMenuViewController.resumeButton.style = .plain
+            }
+
             if #unavailable(iOS 26)
             {
                 gridMenuViewController.resumeButton.image = nil
@@ -153,11 +160,24 @@ extension PauseViewController
                 navigationBarAppearance.shadowColor = UIColor.white.withAlphaComponent(0.2)
                 navigationBarAppearance.titleTextAttributes = [.foregroundColor: UIColor.white]
                 self.pauseNavigationController.navigationBar.standardAppearance = navigationBarAppearance
+                self.pauseNavigationController.navigationBar.scrollEdgeAppearance = navigationBarAppearance
+                self.pauseNavigationController.navigationBar.compactAppearance = navigationBarAppearance
+                if #available(iOS 15.0, *)
+                {
+                    self.pauseNavigationController.navigationBar.compactScrollEdgeAppearance = navigationBarAppearance
+                }
                 
                 let transparentBarAppearance = navigationBarAppearance.copy()
-                transparentBarAppearance.backgroundColor = nil
-                transparentBarAppearance.backgroundEffect = nil
+                transparentBarAppearance.configureWithTransparentBackground()
+                transparentBarAppearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+                transparentBarAppearance.shadowColor = .clear
                 gridMenuViewController.navigationItem.standardAppearance = transparentBarAppearance
+                gridMenuViewController.navigationItem.scrollEdgeAppearance = transparentBarAppearance
+                gridMenuViewController.navigationItem.compactAppearance = transparentBarAppearance
+                if #available(iOS 15.0, *)
+                {
+                    gridMenuViewController.navigationItem.compactScrollEdgeAppearance = transparentBarAppearance
+                }
             }
             
             gridMenuViewController.items = self.pauseItems

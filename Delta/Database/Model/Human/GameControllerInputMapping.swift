@@ -36,6 +36,10 @@ public class GameControllerInputMapping: _GameControllerInputMapping
 
 extension GameControllerInputMapping
 {
+    private static let dsGameTypeIdentifier = "com.rileytestut.delta.game.ds"
+    private static let touchScreenXIdentifier = "touchScreenX"
+    private static let touchScreenYIdentifier = "touchScreenY"
+
     class func inputMapping(for gameController: GameController, gameType: GameType, in managedObjectContext: NSManagedObjectContext) -> GameControllerInputMapping?
     {
         guard let playerIndex = gameController.playerIndex else {
@@ -62,6 +66,45 @@ extension GameControllerInputMapping
     }
 }
 
+private extension GameControllerInputMapping
+{
+    func isDSTouchControllerInput(_ controllerInput: Input) -> Bool
+    {
+        guard self.gameType.rawValue == Self.dsGameTypeIdentifier else { return false }
+        guard self.gameControllerInputType == .controllerSkin else { return false }
+        guard controllerInput.type == .controller(.controllerSkin) else { return false }
+        
+        switch controllerInput.stringValue
+        {
+        case Self.touchScreenXIdentifier, Self.touchScreenYIdentifier: return true
+        default: return false
+        }
+    }
+    
+    func canonicalDSTouchInput(for controllerInput: Input) -> Input?
+    {
+        guard self.isDSTouchControllerInput(controllerInput) else { return nil }
+        guard let deltaCore = Delta.core(for: self.gameType) else { return nil }
+        
+        let gameInput = deltaCore.gameInputType.init(stringValue: controllerInput.stringValue)
+        return gameInput
+    }
+    
+    func normalizedDSTouchInput(for controllerInput: Input, mappedInput: Input?) -> Input?
+    {
+        guard let canonicalInput = self.canonicalDSTouchInput(for: controllerInput) else { return mappedInput }
+        
+        guard let mappedInput else { return canonicalInput }
+        
+        guard mappedInput.type == .game(self.gameType), mappedInput.stringValue == canonicalInput.stringValue else {
+            return canonicalInput
+        }
+        
+        return mappedInput
+    }
+    
+}
+
 extension GameControllerInputMapping: GameControllerInputMappingProtocol
 {
     var name: String? {
@@ -75,7 +118,8 @@ extension GameControllerInputMapping: GameControllerInputMappingProtocol
     
     public func input(forControllerInput controllerInput: Input) -> Input?
     {
-        return self.inputMapping.input(forControllerInput: controllerInput)
+        let mappedInput = self.inputMapping.input(forControllerInput: controllerInput)
+        return self.normalizedDSTouchInput(for: controllerInput, mappedInput: mappedInput)
     }
     
     func set(_ input: Input?, forControllerInput controllerInput: Input)

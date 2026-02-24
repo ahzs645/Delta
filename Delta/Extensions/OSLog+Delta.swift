@@ -10,20 +10,20 @@
 
 extension OSLog.Category
 {
-    static let main = "Main"
-    static let database = "Database"
-    static let purchases = "Purchases"
-    static let achievements = "Achievements"
+    static var main: String { "Main" }
+    static var database: String { "Database" }
+    static var purchases: String { "Purchases" }
+    static var achievements: String { "Achievements" }
 }
 
 extension Logger
 {
-    static let deltaSubsystem = "com.rileytestut.Delta"
+    static var deltaSubsystem: String { "com.rileytestut.Delta" }
     
-    static let main = Logger(subsystem: deltaSubsystem, category: OSLog.Category.main)
-    static let database = Logger(subsystem: deltaSubsystem, category: OSLog.Category.database)
-    static let purchases = Logger(subsystem: deltaSubsystem, category: OSLog.Category.purchases)
-    static let achievements = Logger(subsystem: deltaSubsystem, category: OSLog.Category.achievements)
+    static var main: Logger { Logger(subsystem: deltaSubsystem, category: OSLog.Category.main) }
+    static var database: Logger { Logger(subsystem: deltaSubsystem, category: OSLog.Category.database) }
+    static var purchases: Logger { Logger(subsystem: deltaSubsystem, category: OSLog.Category.purchases) }
+    static var achievements: Logger { Logger(subsystem: deltaSubsystem, category: OSLog.Category.achievements) }
 }
 
 @available(iOS 15, *)

@@ -31,12 +31,19 @@ class PreviewGameViewController: DeltaCore.GameViewController
     
     private var emulatorCoreQueue = DispatchQueue(label: "com.rileytestut.Delta.PreviewGameViewController.emulatorCoreQueue", qos: .userInitiated)
     private var copiedSaveFiles = [(originalURL: URL, copyURL: URL)]()
-    
-    private lazy var temporaryDirectoryURL: URL = {
+
+    private var _temporaryDirectoryURL: URL?
+    private var temporaryDirectoryURL: URL {
+        if let temporaryDirectoryURL = self._temporaryDirectoryURL
+        {
+            return temporaryDirectoryURL
+        }
+        
         let directoryURL = FileManager.default.temporaryDirectory.appendingPathComponent("preview-" + UUID().uuidString)
         try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true, attributes: nil)
+        self._temporaryDirectoryURL = directoryURL
         return directoryURL
-    }()
+    }
     
     override var game: GameProtocol? {
         willSet {
@@ -254,7 +261,7 @@ private extension PreviewGameViewController
         
         self.copiedSaveFiles.removeAll()
         
-        let fileURLs = gameSave.syncableFiles.lazy.map { $0.fileURL }
+        let fileURLs = gameSave.syncableFiles.map { $0.fileURL }
         for fileURL in fileURLs
         {
             do

@@ -8,7 +8,7 @@
 
 import UIKit
 import CoreData
-import MobileCoreServices
+import UniformTypeIdentifiers
 
 import DeltaCore
 
@@ -143,13 +143,22 @@ extension GamesViewController
         {
             navigationController.overrideUserInterfaceStyle = .dark
             
+            let navigationBarAppearance = navigationController.navigationBar.standardAppearance.copy()
+            navigationBarAppearance.configureWithTransparentBackground()
+            navigationBarAppearance.backgroundColor = .clear
+            navigationBarAppearance.backgroundEffect = nil
+            navigationBarAppearance.shadowColor = .clear
+            navigationController.navigationBar.standardAppearance = navigationBarAppearance
+            navigationController.navigationBar.scrollEdgeAppearance = navigationBarAppearance
+            navigationController.navigationBar.compactAppearance = navigationBarAppearance
+            
+            if #available(iOS 15, *)
+            {
+                navigationController.navigationBar.compactScrollEdgeAppearance = navigationBarAppearance
+            }
+            
             if #unavailable(iOS 26)
             {
-                let navigationBarAppearance = navigationController.navigationBar.standardAppearance.copy()
-                navigationBarAppearance.backgroundEffect = UIBlurEffect(style: .dark)
-                navigationController.navigationBar.standardAppearance = navigationBarAppearance
-                navigationController.navigationBar.scrollEdgeAppearance = navigationBarAppearance
-                
                 let toolbarAppearance = navigationController.toolbar.standardAppearance.copy()
                 toolbarAppearance.backgroundEffect = UIBlurEffect(style: .dark)
                 navigationController.toolbar.standardAppearance = toolbarAppearance
@@ -441,7 +450,7 @@ extension GamesViewController: ImportControllerDelegate
     private func makeImportController() -> ImportController
     {
         var documentTypes = Set(System.registeredSystems.map { $0.gameType.rawValue })
-        documentTypes.insert(kUTTypeZipArchive as String)
+        documentTypes.insert(UTType.zip.identifier)
         documentTypes.insert("com.rileytestut.delta.skin")
         
         #if BETA

@@ -94,19 +94,18 @@ class CheatBase: GamesDatabase
     
     func cheats(for game: Game) async throws -> [CheatMetadata]?
     {
-        let metadata = await withCheckedContinuation { continuation in
-            if let context = game.managedObjectContext
-            {
-                context.perform {
-                    let metadata = self.metadata(for: game)
-                    continuation.resume(returning: metadata)
-                }
+        let metadata: GameMetadata?
+        if let context = game.managedObjectContext
+        {
+            var contextMetadata: GameMetadata?
+            context.performAndWait {
+                contextMetadata = self.metadata(for: game)
             }
-            else
-            {
-                let metadata = self.metadata(for: game)
-                continuation.resume(returning: metadata)
-            }
+            metadata = contextMetadata
+        }
+        else
+        {
+            metadata = self.metadata(for: game)
         }
         
         guard let romIDValue = metadata?.romID else { return nil }

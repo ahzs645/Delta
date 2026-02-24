@@ -59,10 +59,17 @@ public class ControllerSkin: _ControllerSkin
     // Transient, not persisted to Core Data.
     public var isReversingScreens: Bool = false
     
-    private lazy var controllerSkin: DeltaCore.ControllerSkin? = {
+    private var _controllerSkin: DeltaCore.ControllerSkin?
+    private var controllerSkin: DeltaCore.ControllerSkin? {
+        if let controllerSkin = self._controllerSkin
+        {
+            return controllerSkin
+        }
+        
         let controllerSkin = self.isStandard ? DeltaCore.ControllerSkin.standardControllerSkin(for: self.gameType) : DeltaCore.ControllerSkin(fileURL: self.fileURL)
+        self._controllerSkin = controllerSkin
         return controllerSkin
-    }()
+    }
     
     public override func awakeFromFetch()
     {
@@ -159,7 +166,7 @@ extension ControllerSkin: ControllerSkinProtocol
             // Reverse order of ids and inputFrames, but leave other properties in same order.
             // This effectively switches out inputFrames without changing the actual screen placements.
             
-            let reversedInputFramesAndIDs = Array(screens.lazy.map { ($0.inputFrame, $0.id) }.reversed())
+            let reversedInputFramesAndIDs = Array(screens.map { ($0.inputFrame, $0.id) }.reversed())
             screens = zip(0..., screens).map { (index, screen) in
                 let (inputFrame, id) = reversedInputFramesAndIDs[index]
                 

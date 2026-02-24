@@ -8,7 +8,7 @@
 
 import UIKit
 import SwiftUI
-import MobileCoreServices
+import UniformTypeIdentifiers
 import AVFoundation
 import RegexBuilder
 
@@ -30,7 +30,7 @@ extension GameCollectionViewController
         case alreadyRunning
         case downloadingGameSave
         case biosNotFound
-        case systemAlreadyRunning(Game?, UISceneSession)
+        case systemAlreadyRunning(gameName: String?, gameIdentifier: String?, sessionIdentifier: String)
         case multiplayerSessionActive(EmulatorCore?)
         
         var errorTitle: String? {
@@ -50,11 +50,11 @@ extension GameCollectionViewController
             case .alreadyRunning: return NSLocalizedString("Delta can only play one copy of a game at a time.", comment: "")
             case .downloadingGameSave: return NSLocalizedString("Please wait until after this game's save file has been downloaded before playing to prevent losing save data.", comment: "")
             case .biosNotFound: return NSLocalizedString("Please import the required files in Delta's settings to play DS games.", comment: "")
-            case .systemAlreadyRunning(let game, _):
+            case .systemAlreadyRunning(let gameName, _, _):
                 var gameNamePhrase = ""
-                if let game
+                if let gameName
                 {
-                    gameNamePhrase = String(format: " (“%@”)", game.name)
+                    gameNamePhrase = String(format: " (“%@”)", gameName)
                 }
                 
                 let message = String(format: NSLocalizedString("Delta can only play one game per system at a time.\n\nPlease quit the other game%@, or choose another game for a different system.", comment: ""), gameNamePhrase)
@@ -80,8 +80,9 @@ extension GameCollectionViewController
         var recoveryActions: [UIAlertAction] {
             switch self
             {
-            case .systemAlreadyRunning(_, let session):
+            case .systemAlreadyRunning(_, _, let sessionIdentifier):
                 let quitAction = UIAlertAction(title: NSLocalizedString("Quit Game", comment: ""), style: .destructive) { _ in
+                    guard let session = UIApplication.shared.openSessions.first(where: { $0.persistentIdentifier == sessionIdentifier }) else { return }
                     session.quit()
                 }
                 return [quitAction]
@@ -535,12 +536,21 @@ private extension GameCollectionViewController
     //MARK: - Emulation
     func launchGame(at indexPath: IndexPath, clearScreen: Bool, ignoreAlreadyRunningError: Bool = false)
     {
+        let game = self.dataSource.item(at: indexPath)
+        self.launchGame(game, at: indexPath, clearScreen: clearScreen, ignoreAlreadyRunningError: ignoreAlreadyRunningError)
+    }
+
+    func launchGame(_ game: Game, clearScreen: Bool, ignoreAlreadyRunningError: Bool = false)
+    {
+        self.launchGame(game, at: nil, clearScreen: clearScreen, ignoreAlreadyRunningError: ignoreAlreadyRunningError)
+    }
+
+    private func launchGame(_ game: Game, at indexPath: IndexPath?, clearScreen: Bool, ignoreAlreadyRunningError: Bool = false)
+    {
         self.isResumingGame = false
         
-        func launchGame(ignoringErrors ignoredErrors: [Error])
+        func attemptLaunch(ignoringErrors ignoredErrors: [Error])
         {
-            let game = self.dataSource.item(at: indexPath)
-            
             do
             {
                 try self.validateLaunchingGame(game, ignoringErrors: ignoredErrors)
@@ -550,8 +560,8 @@ private extension GameCollectionViewController
                     self.activeEmulatorCore?.gameViews.forEach { $0.inputImage = nil }
                 }
                 
-                let cell = self.collectionView.cellForItem(at: indexPath)
-                self.performSegue(withIdentifier: "unwindFromGames", sender: cell)
+                let sender = indexPath.flatMap { self.collectionView.cellForItem(at: $0) } ?? game
+                self.performSegue(withIdentifier: "unwindFromGames", sender: sender)
             }
             catch
             {
@@ -587,13 +597,13 @@ private extension GameCollectionViewController
                         // Disable videoManager to prevent flash of black
                         self.activeEmulatorCore?.videoManager.isEnabled = false
                         
-                        launchGame(ignoringErrors: [LaunchError.alreadyRunning, LaunchError.multiplayerSessionActive(nil)])
+                        attemptLaunch(ignoringErrors: [LaunchError.alreadyRunning, LaunchError.multiplayerSessionActive(nil)])
                         
                         // The game hasn't changed, so the activeEmulatorCore is the same as before, so we need to enable videoManager it again
                         self.activeEmulatorCore?.videoManager.isEnabled = true
                     }))
                     alertController.addAction(UIAlertAction(title: NSLocalizedString("Restart", comment: ""), style: .destructive, handler: { (action) in
-                        launchGame(ignoringErrors: [LaunchError.alreadyRunning, LaunchError.multiplayerSessionActive(nil)])
+                        attemptLaunch(ignoringErrors: [LaunchError.alreadyRunning, LaunchError.multiplayerSessionActive(nil)])
                     }))
                     self.present(alertController, animated: true)
                     
@@ -630,11 +640,11 @@ private extension GameCollectionViewController
         
         if ignoreAlreadyRunningError
         {
-            launchGame(ignoringErrors: [LaunchError.alreadyRunning])
+            attemptLaunch(ignoringErrors: [LaunchError.alreadyRunning])
         }
         else
         {
-            launchGame(ignoringErrors: [])
+            attemptLaunch(ignoringErrors: [])
         }
     }
     
@@ -672,7 +682,7 @@ private extension GameCollectionViewController
                 if let otherGame = delegate.game, otherGame.type == game.type
                 {
                     // Can't emulate multiple games from same system simultaneously.
-                    throw LaunchError.systemAlreadyRunning(otherGame, mainScene.session)
+                    throw LaunchError.systemAlreadyRunning(gameName: otherGame.name, gameIdentifier: otherGame.identifier, sessionIdentifier: mainScene.session.persistentIdentifier)
                 }
             }
             
@@ -688,7 +698,7 @@ private extension GameCollectionViewController
                     }
                     
                     // Can't emulate multiple games from same system simultaneously.
-                    throw LaunchError.systemAlreadyRunning(otherGame, session)
+                    throw LaunchError.systemAlreadyRunning(gameName: otherGame?.name, gameIdentifier: otherGame?.identifier, sessionIdentifier: session.persistentIdentifier)
                 }
             }
         }
@@ -788,6 +798,24 @@ private extension GameCollectionViewController
         
         let openMenu = UIMenu(title: "", options: .displayInline, children: [openNewWindowAction])
         let openActions = UIApplication.shared.supportsMultipleScenes ? [openMenu] : []
+
+        let localMultiplayerActions: [UIMenuElement]
+        if game.type == .ds && Settings.preferredCore(for: .ds) == MelonDS.core
+        {
+            let downloadPlayAction = UIAction(title: NSLocalizedString("Launch Download Play", comment: ""), image: UIImage(symbolNameIfAvailable: "house")) { [unowned self] _ in
+                self.launchDownloadPlayHomeScreen(from: game)
+            }
+
+            let multicardTestAction = UIAction(title: NSLocalizedString("Multicard Join Test", comment: ""), image: UIImage(symbolNameIfAvailable: "antenna.radiowaves.left.and.right")) { [unowned self] _ in
+                self.presentMulticardJoinTest(for: game)
+            }
+
+            localMultiplayerActions = [UIMenu(title: "", options: .displayInline, children: [downloadPlayAction, multicardTestAction])]
+        }
+        else
+        {
+            localMultiplayerActions = []
+        }
         
         let saveFileMenu = UIMenu(title: NSLocalizedString("Manage Save File", comment: ""), image: UIImage(symbolNameIfAvailable: "doc"), children: [importSaveFile, exportSaveFile])
         
@@ -803,11 +831,96 @@ private extension GameCollectionViewController
             return [renameAction, shareAction, settingsMenu, deleteAction]
             
         case .ds where game.identifier == Game.melonDSBIOSIdentifier || game.identifier == Game.melonDSDSiBIOSIdentifier:
-            return openActions + [renameAction, changeArtworkAction, settingsMenu, saveStatesAction]
+            return openActions + localMultiplayerActions + [renameAction, changeArtworkAction, settingsMenu, saveStatesAction]
             
         default:
-            return openActions + [renameAction, changeArtworkAction, shareAction, settingsMenu, savesMenu, deleteAction]
+            return openActions + localMultiplayerActions + [renameAction, changeArtworkAction, shareAction, settingsMenu, savesMenu, deleteAction]
         }
+    }
+
+    func launchDownloadPlayHomeScreen(from game: Game)
+    {
+        guard game.type == .ds else { return }
+
+        guard let homeScreenGame = self.preferredDSHomeScreenGame() else {
+            self.presentMissingDSFilesAlert()
+            return
+        }
+
+        self.launchGame(homeScreenGame, clearScreen: true)
+    }
+
+    func presentMulticardJoinTest(for game: Game)
+    {
+        let snapshot = MelonDSLocalMultiplayerManager.shared.diagnosticsSnapshot()
+
+        var statusLines = [
+            String(format: NSLocalizedString("Local Peer ID: %@", comment: ""), snapshot.localPeerIdentifier),
+            String(format: NSLocalizedString("Connected Peers: %d", comment: ""), snapshot.connectedPeers.count),
+            String(format: NSLocalizedString("Connecting Peers: %d", comment: ""), snapshot.connectingPeers.count),
+            String(format: NSLocalizedString("Pending Invites: %d", comment: ""), snapshot.invitedPeers.count)
+        ]
+
+        if let gameHash = snapshot.gameHash
+        {
+            statusLines.append(String(format: NSLocalizedString("Session Hash: %@", comment: ""), gameHash))
+        }
+
+        if !snapshot.connectedPeers.isEmpty
+        {
+            statusLines.append(String(format: NSLocalizedString("Peers: %@", comment: ""), snapshot.connectedPeers.joined(separator: ", ")))
+        }
+
+        let transportState = snapshot.isTransportActive ?
+            NSLocalizedString("Transport Status: Active", comment: "") :
+            NSLocalizedString("Transport Status: Waiting for game launch", comment: "")
+        statusLines.append(transportState)
+
+        let instructions = NSLocalizedString("1) Host device: launch your DS game and open local multiplayer.\n2) Joining device: launch Download Play from DS Home Screen.\n3) In Download Play, choose the host session and join.", comment: "")
+
+        let message = [
+            NSLocalizedString("Use this to verify multicard join between two Delta devices.", comment: ""),
+            statusLines.joined(separator: "\n"),
+            instructions
+        ].joined(separator: "\n\n")
+
+        let alertController = UIAlertController(title: NSLocalizedString("Multicard Join Test", comment: ""), message: message, preferredStyle: .alert)
+        alertController.addAction(UIAlertAction(title: NSLocalizedString("Launch Download Play", comment: ""), style: .default) { _ in
+            self.launchDownloadPlayHomeScreen(from: game)
+        })
+        alertController.addAction(UIAlertAction(title: String(format: NSLocalizedString("Launch \"%@\"", comment: ""), game.name), style: .default) { _ in
+            self.launchGame(game, clearScreen: true)
+        })
+        alertController.addAction(UIAlertAction(title: NSLocalizedString("Refresh Status", comment: ""), style: .default) { _ in
+            self.presentMulticardJoinTest(for: game)
+        })
+        alertController.addAction(.cancel)
+
+        self.present(alertController, animated: true, completion: nil)
+    }
+
+    func preferredDSHomeScreenGame() -> Game?
+    {
+        let predicate = NSPredicate(format: "%K IN %@", #keyPath(Game.identifier), [Game.melonDSBIOSIdentifier, Game.melonDSDSiBIOSIdentifier])
+        let games = Game.instancesWithPredicate(predicate, inManagedObjectContext: DatabaseManager.shared.viewContext, type: Game.self)
+
+        if let dsHomeScreen = games.first(where: { $0.identifier == Game.melonDSBIOSIdentifier })
+        {
+            return dsHomeScreen
+        }
+
+        return games.first
+    }
+
+    func presentMissingDSFilesAlert()
+    {
+        let alertController = UIAlertController(title: NSLocalizedString("Missing Required DS Files", comment: ""), message: NSLocalizedString("Delta requires certain files to launch the DS Home Screen. Please import them first.", comment: ""), preferredStyle: .alert)
+        alertController.addAction(UIAlertAction(title: NSLocalizedString("Import Files", comment: ""), style: .default) { _ in
+            self.performSegue(withIdentifier: "showDSSettings", sender: nil)
+        })
+        alertController.addAction(.cancel)
+
+        self.present(alertController, animated: true, completion: nil)
     }
     
     func openInNewWindow(_ game: Game)
@@ -943,7 +1056,7 @@ private extension GameCollectionViewController
         
         let gamesDatabaseImportOption = GamesDatabaseImportOption(searchText: sanitizedGameName, presentingViewController: self)
         
-        let importController = ImportController(documentTypes: [kUTTypeImage as String])
+        let importController = ImportController(documentTypes: [UTType.image.identifier])
         importController.delegate = self
         importController.importOptions = [clipboardImportOption, photoLibraryImportOption, gamesDatabaseImportOption]
         importController.sourceView = self._popoverSourceView
@@ -1103,7 +1216,7 @@ private extension GameCollectionViewController
     {
         self._importingSaveFileGame = game
         
-        let importController = ImportController(documentTypes: [kUTTypeItem as String])
+        let importController = ImportController(documentTypes: [UTType.item.identifier])
         importController.delegate = self
         self.present(importController, animated: true, completion: nil)
     }
@@ -1381,10 +1494,10 @@ extension GameCollectionViewController
         {
             try self.validateLaunchingGame(game, ignoringErrors: [LaunchError.alreadyRunning])
         }
-        catch LaunchError.systemAlreadyRunning(let activeGame?, _) where activeGame == game
+        catch LaunchError.systemAlreadyRunning(_, let activeGameIdentifier?, _) where activeGameIdentifier == game.identifier
         {
             // Selected game is currently running in background/another window, so don't show context menu.
-            Logger.main.info("Game \(activeGame.identifier, privacy: .public) is currently running, hiding context menu.")
+            Logger.main.info("Game \(activeGameIdentifier, privacy: .public) is currently running, hiding context menu.")
             return nil
         }
         catch LaunchError.multiplayerSessionActive(let emulatorCore) where (emulatorCore?.game as? Game) == game

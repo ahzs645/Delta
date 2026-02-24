@@ -90,10 +90,16 @@ extension DeltaCoreProtocol
         switch self
         {
         case MelonDS.core:
+            let version = MelonDS.core.version ?? NSLocalizedString("Unknown", comment: "")
+            let versionURL = MelonDS.core.version
+                .flatMap { $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) }
+                .flatMap { URL(string: "https://github.com/melonDS-emu/melonDS/releases/tag/\($0)") }
+                ?? URL(string: "https://github.com/melonDS-emu/melonDS/releases")
+
             return DeltaCoreMetadata([.name: .init(value: NSLocalizedString("melonDS", comment: ""), url: URL(string: "http://melonds.kuribo64.net")),
                                       .developer: .init(value: NSLocalizedString("Arisotura", comment: ""), url: URL(string: "https://twitter.com/Arisotura")),
-                                      .version: .init(value: NSLocalizedString("0.9.5", comment: ""), url: URL(string: "https://github.com/melonDS-emu/melonDS/releases/tag/0.9.5")),
-                                      .source: .init(value: NSLocalizedString("GitHub", comment: ""), url: URL(string: "https://github.com/Arisotura/melonDS")),
+                                      .version: .init(value: version, url: versionURL),
+                                      .source: .init(value: NSLocalizedString("GitHub", comment: ""), url: URL(string: "https://github.com/melonDS-emu/melonDS")),
                                       .donate: .init(value: NSLocalizedString("Patreon", comment: ""), url: URL(string: "https://www.patreon.com/staplebutter"))])
         case GBC.core:
             return DeltaCoreMetadata([.name: .init(value: NSLocalizedString("Gambatte", comment: "")),

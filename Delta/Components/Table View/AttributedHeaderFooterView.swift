@@ -11,7 +11,7 @@ import UIKit
 @available(iOS 15, *)
 final class AttributedHeaderFooterView: UITableViewHeaderFooterView
 {
-    static let reuseIdentifier: String = "TextViewHeaderFooterView"
+    static var reuseIdentifier: String { "TextViewHeaderFooterView" }
     
     var attributedText: AttributedString? {
         get {

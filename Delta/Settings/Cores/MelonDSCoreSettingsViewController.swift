@@ -9,7 +9,7 @@
 import UIKit
 import SwiftUI
 import SafariServices
-import MobileCoreServices
+import UniformTypeIdentifiers
 import CryptoKit
 
 import DeltaCore
@@ -167,12 +167,6 @@ private extension MelonDSCoreSettingsViewController
 {
     func isSectionHidden(_ section: Section) -> Bool
     {
-        #if BETA
-        let isBeta = true
-        #else
-        let isBeta = false
-        #endif
-        
         switch section
         {
         case .performance:
@@ -182,7 +176,7 @@ private extension MelonDSCoreSettingsViewController
             // guard Settings.preferredCore(for: .ds) == MelonDS.core else { return true }
             // return !UIDevice.current.supportsJIT
             
-            // AltJIT not currently supported with melonDS 0.9.5.
+            // AltJIT currently disabled for melonDS in Delta.
             return true
             
         case .online:
@@ -191,9 +185,11 @@ private extension MelonDSCoreSettingsViewController
                 return true
             }
             
-        case .dsiBIOS where !isBeta:
+        #if !BETA
+        case .dsiBIOS:
             // Using public Delta version, which doesn't support DSi (yet).
             return true
+        #endif
             
         default: break
         }

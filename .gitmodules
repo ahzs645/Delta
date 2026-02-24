@@ -1,6 +1,6 @@
 [submodule "Cores/DeltaCore"]
 	path = Cores/DeltaCore
-	url = git@github.com:rileytestut/DeltaCore.git
+	url = https://github.com/ahzs645/DeltaCore.git
 [submodule "Cores/SNESDeltaCore"]
 	path = Cores/SNESDeltaCore
 	url = git@github.com:rileytestut/SNESDeltaCore.git
@@ -21,10 +21,11 @@
 	url = git@github.com:rileytestut/NESDeltaCore.git
 [submodule "Cores/N64DeltaCore"]
 	path = Cores/N64DeltaCore
-	url = git@github.com:rileytestut/N64DeltaCore.git
+	url = https://github.com/ahzs645/N64DeltaCore.git
 [submodule "Cores/MelonDSDeltaCore"]
 	path = Cores/MelonDSDeltaCore
 	url = https://github.com/ahzs645/MelonDSDeltaCore.git
+	branch = master
 [submodule "Cores/GPGXDeltaCore"]
 	path = Cores/GPGXDeltaCore
 	url = https://github.com/rileytestut/GPGXDeltaCore.git

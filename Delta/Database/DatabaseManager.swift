@@ -36,7 +36,13 @@ extension DatabaseManager
             {
             case .doesNotExist: return NSLocalizedString("The file does not exist.", comment: "")
             case .invalid: return NSLocalizedString("The file is invalid.", comment: "")
-            case .unsupported: return NSLocalizedString("This file is not supported.", comment: "")
+            case .unsupported(let url):
+                if DatabaseManager.isMelonDSBIOSFilename(url.lastPathComponent)
+                {
+                    return NSLocalizedString("This appears to be a Nintendo DS BIOS file. Import BIOS files from Settings > Core Settings.", comment: "")
+                }
+                
+                return NSLocalizedString("This file is not supported.", comment: "")
             case .unknown(_, let error): return error.localizedDescription
             case .saveFailed(_, let error): return error.localizedDescription
             }
@@ -247,6 +253,66 @@ extension DatabaseManager
     }
 }
 
+private extension DatabaseManager
+{
+    struct MelonDSBIOSImportMetadata
+    {
+        let basename: String
+        let validFileSizeRanges: [ClosedRange<Int>]
+    }
+    
+    static let melonDSBIOSImportMetadataByFilename: [String: MelonDSBIOSImportMetadata] = [
+        "bios7.bin": .init(basename: "bios7", validFileSizeRanges: [16 * 1024...16 * 1024]),
+        "bios9.bin": .init(basename: "bios9", validFileSizeRanges: [4 * 1024...4 * 1024]),
+        "firmware.bin": .init(basename: "firmware", validFileSizeRanges: [128 * 1024...128 * 1024, 256 * 1024...256 * 1024, 512 * 1024...512 * 1024]),
+        "dsibios7.bin": .init(basename: "dsibios7", validFileSizeRanges: [64 * 1024...64 * 1024]),
+        "dsibios9.bin": .init(basename: "dsibios9", validFileSizeRanges: [64 * 1024...64 * 1024]),
+        "dsifirmware.bin": .init(basename: "dsifirmware", validFileSizeRanges: [128 * 1024...128 * 1024]),
+        "dsinand.bin": .init(basename: "dsinand", validFileSizeRanges: [200 * 1024 * 1024...300 * 1024 * 1024]),
+    ]
+    
+    static let melonDSBIOSImportMetadataByBasename: [String: MelonDSBIOSImportMetadata] = {
+        let basenames = DatabaseManager.melonDSBIOSImportMetadataByFilename.values.map { metadata in
+            (metadata.basename, metadata)
+        }
+        
+        return Dictionary(uniqueKeysWithValues: basenames)
+    }()
+    
+    static func isMelonDSBIOSFilename(_ filename: String) -> Bool
+    {
+        let normalizedFilename = filename.lowercased()
+        return self.melonDSBIOSImportMetadataByFilename[normalizedFilename] != nil
+    }
+    
+    static func isLikelyMisimportedMelonDSBIOSGame(_ game: Game) -> Bool
+    {
+        guard game.type == .genesis else { return false }
+        guard game.fileURL.pathExtension.lowercased() == "bin" else { return false }
+        
+        let normalizedName = game.name.lowercased()
+        
+        guard let metadata = self.melonDSBIOSImportMetadataByBasename[normalizedName] else { return false }
+        guard let fileSize = self.fileSize(at: game.fileURL) else { return false }
+        
+        return metadata.validFileSizeRanges.contains(where: { $0.contains(fileSize) })
+    }
+    
+    static func fileSize(at url: URL) -> Int?
+    {
+        do
+        {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            let fileSize = (attributes[.size] as? NSNumber)?.intValue
+            return fileSize
+        }
+        catch
+        {
+            return nil
+        }
+    }
+}
+
 //MARK: - Update -
 private extension DatabaseManager
 {
@@ -281,6 +347,7 @@ private extension DatabaseManager
         NotificationCenter.default.addObserver(self, selector: #selector(DatabaseManager.validateManagedObjectContextSave(with:)), name: .NSManagedObjectContextDidSave, object: nil)
         
         self.performBackgroundTask { (context) in
+            self.cleanupMisimportedMelonDSBIOSGames(in: context)
             
             for system in System.allCases
             {
@@ -334,6 +401,34 @@ private extension DatabaseManager
             completion()
         }
     }
+    
+    func cleanupMisimportedMelonDSBIOSGames(in context: NSManagedObjectContext)
+    {
+        let fetchRequest: NSFetchRequest<Game> = Game.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "%K == %@", #keyPath(Game.type), GameType.genesis.rawValue)
+        fetchRequest.returnsObjectsAsFaults = false
+        
+        do
+        {
+            let games = try context.fetch(fetchRequest)
+            let misimportedBIOSGames = games.filter { game in
+                DatabaseManager.isLikelyMisimportedMelonDSBIOSGame(game)
+            }
+            
+            guard !misimportedBIOSGames.isEmpty else { return }
+            
+            for game in misimportedBIOSGames
+            {
+                context.delete(game)
+            }
+            
+            print("Removed misimported melonDS BIOS files from Genesis library:", misimportedBIOSGames.map(\.name))
+        }
+        catch
+        {
+            print("Failed to clean up misimported melonDS BIOS files.", error)
+        }
+    }
 }
 
 //MARK: - Importing -
@@ -380,6 +475,12 @@ extension DatabaseManager
             {
                 guard FileManager.default.fileExists(atPath: url.path) else {
                     errors.insert(.doesNotExist(url))
+                    continue
+                }
+                
+                if DatabaseManager.isMelonDSBIOSFilename(url.lastPathComponent)
+                {
+                    errors.insert(.unsupported(url))
                     continue
                 }
                 

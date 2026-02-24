@@ -86,6 +86,32 @@ private extension GameViewController
             return controllerInput
         }
     }
+    
+    struct DSTouchPassthroughInputMapping: GameControllerInputMappingProtocol
+    {
+        let baseInputMapping: GameControllerInputMappingProtocol
+        
+        var gameControllerInputType: GameControllerInputType {
+            return self.baseInputMapping.gameControllerInputType
+        }
+        
+        func input(forControllerInput controllerInput: Input) -> Input?
+        {
+            let mappedInput = self.baseInputMapping.input(forControllerInput: controllerInput)
+            
+            guard controllerInput.type == .controller(.controllerSkin) else { return mappedInput }
+            guard controllerInput.stringValue == "touchScreenX" || controllerInput.stringValue == "touchScreenY" else { return mappedInput }
+            
+            guard let canonicalInput = MelonDSGameInput(stringValue: controllerInput.stringValue) else { return mappedInput }
+            
+            guard let mappedInput else { return canonicalInput }
+            guard mappedInput.type == .game(.ds), mappedInput.stringValue == canonicalInput.stringValue else {
+                return canonicalInput
+            }
+            
+            return mappedInput
+        }
+    }
 }
 
 class GameViewController: DeltaCore.GameViewController
@@ -109,6 +135,7 @@ class GameViewController: DeltaCore.GameViewController
             if oldValue?.fileURL != game?.fileURL
             {
                 self.shouldResetSustainedInputs = true
+                self.resetWirelessMultiplayerState()
             }
             
             self.updateControllers()
@@ -167,6 +194,8 @@ class GameViewController: DeltaCore.GameViewController
     // Online Multiplayer
     private var onlineConnectionDate: Date?
     private var onlineBackgroundTaskID: UIBackgroundTaskIdentifier?
+    private var isOnlineWFCConnected = false
+    private var isLocalWirelessConnected = false
     
     // Handoff
     private var isContinuingHandoff = false
@@ -262,6 +291,8 @@ class GameViewController: DeltaCore.GameViewController
         NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.didDeactivateGyro(with:)), name: GBA.didDeactivateGyroNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.didConnectOnline(with:)), name: MelonDS.didConnectToWFCNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.didDisconnectFromOnline(with:)), name: MelonDS.didDisconnectFromWFCNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.didConnectLocalWireless(with:)), name: MelonDSLocalMultiplayerManager.didConnectNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.didDisconnectLocalWireless(with:)), name: MelonDSLocalMultiplayerManager.didDisconnectNotification, object: nil)
         
         NotificationCenter.default.addObserver(self, selector: #selector(GameViewController.emulationDidQuit(with:)), name: EmulatorCore.emulationDidQuitNotification, object: nil)
         
@@ -737,12 +768,49 @@ extension GameViewController
                 context.saveWithErrorLogging()
             }
         }
+        
+        self.updateLocalMultiplayerTransportState()
     }
 }
 
 //MARK: - Emulation -
 private extension GameViewController
 {
+    func updateWirelessMultiplayerState()
+    {
+        guard let emulatorCore = self.emulatorCore else { return }
+        emulatorCore.isWirelessMultiplayerActive = (self.isOnlineWFCConnected || self.isLocalWirelessConnected)
+    }
+    
+    func resetWirelessMultiplayerState()
+    {
+        self.isOnlineWFCConnected = false
+        self.isLocalWirelessConnected = false
+        self.updateWirelessMultiplayerState()
+    }
+    
+    func updateLocalMultiplayerTransportState()
+    {
+        guard let emulatorCore = self.emulatorCore, emulatorCore.deltaCore == MelonDS.core,
+              let emulatorBridge = emulatorCore.deltaCore.emulatorBridge as? MelonDSEmulatorBridge
+        else {
+            return
+        }
+        
+        switch emulatorCore.state
+        {
+        case .running:
+            MelonDSLocalMultiplayerManager.shared.start(for: emulatorBridge)
+            
+        case .stopped:
+            MelonDSLocalMultiplayerManager.shared.stop(for: emulatorBridge)
+            self.resetWirelessMultiplayerState()
+            
+        default:
+            break
+        }
+    }
+    
     func quitEmulation()
     {
         if let presentedViewController = self.presentedViewController
@@ -753,6 +821,12 @@ private extension GameViewController
             
             return
         }
+        
+        if let emulatorBridge = self.emulatorCore?.deltaCore.emulatorBridge as? MelonDSEmulatorBridge
+        {
+            MelonDSLocalMultiplayerManager.shared.stop(for: emulatorBridge)
+        }
+        self.resetWirelessMultiplayerState()
         
         self.updateAutoSaveState()
         
@@ -839,15 +913,25 @@ private extension GameViewController
             {
                 if gameController.playerIndex != nil
                 {
-                    let inputMapping: GameControllerInputMappingProtocol
+                    let baseInputMapping: GameControllerInputMappingProtocol
                     
                     if let mapping = GameControllerInputMapping.inputMapping(for: gameController, gameType: game.type, in: DatabaseManager.shared.viewContext)
                     {
-                        inputMapping = mapping
+                        baseInputMapping = mapping
                     }
                     else
                     {
-                        inputMapping = DefaultInputMapping(gameController: gameController)
+                        baseInputMapping = DefaultInputMapping(gameController: gameController)
+                    }
+                    
+                    let inputMapping: GameControllerInputMappingProtocol
+                    if game.type == .ds, gameController.inputType == .controllerSkin
+                    {
+                        inputMapping = DSTouchPassthroughInputMapping(baseInputMapping: baseInputMapping)
+                    }
+                    else
+                    {
+                        inputMapping = baseInputMapping
                     }
                     
                     gameController.addReceiver(self, inputMapping: inputMapping)
@@ -892,7 +976,14 @@ private extension GameViewController
             // If there is both a local player and a connected controller with a controller skin, we prioritize local player's skin.
             // Even if the skin doesn't exist, we'll fall back to standard skin for local player.
             let controllerSkin = Settings.preferredControllerSkin(for: game, traits: traits, forExternalController: false) // Explicitly load non-external controller skin.
-            self.controllerView.controllerSkin = controllerSkin
+            if let controllerSkin
+            {
+                self.controllerView.controllerSkin = controllerSkin
+            }
+            else
+            {
+                self.controllerView.controllerSkin = DeltaCore.ControllerSkin.standardControllerSkin(for: game.type)
+            }
         }
         else if isExternalControllerConnected, let externalControllerSkin = Settings.preferredControllerSkin(for: game, traits: traits, forExternalController: true)
         {
@@ -2137,7 +2228,10 @@ private extension GameViewController
             // May return nil if Settings.supportsExternalDisplays is false
             // guard let externalDisplayScene = UIApplication.shared.externalDisplayScene else { break }
             
-            guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? ExternalDisplayScene }).first(where: { $0.session.role == .windowExternalDisplay }) else { break }
+            guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? ExternalDisplayScene })
+                .first(where: { $0.session.role == .deltaWindowExternalDisplay && $0.screen != UIScreen.main })
+            else { break }
             
             if Settings.supportsExternalDisplays /*, scene.hasKeyboardFocus */ // Connect all scenes, not just one with keyboard focus.
             {
@@ -2290,7 +2384,8 @@ private extension GameViewController
     {
         guard let bridge = notification.object as? EmulatorBridging, bridge.gameURL == self.game?.fileURL else { return }
         
-        guard let emulatorCore, !emulatorCore.isWirelessMultiplayerActive else { return }
+        guard let emulatorCore else { return }
+        guard !self.isOnlineWFCConnected else { return }
         
         if Settings.preferredWFCServer == nil && !UserDefaults.standard.didShowChooseWFCServerAlert, #available(iOS 15, *)
         {
@@ -2314,7 +2409,8 @@ private extension GameViewController
             return
         }
         
-        emulatorCore.isWirelessMultiplayerActive = true
+        self.isOnlineWFCConnected = true
+        self.updateWirelessMultiplayerState()
         emulatorCore.rate = 1.0 // Disable FF in case it is currently enabled.
         
         DispatchQueue.main.async {
@@ -2328,8 +2424,11 @@ private extension GameViewController
     {
         guard let bridge = notification.object as? EmulatorBridging, bridge.gameURL == self.game?.fileURL else { return }
         
-        guard let emulatorCore, emulatorCore.isWirelessMultiplayerActive else { return }
-        emulatorCore.isWirelessMultiplayerActive = false
+        guard self.emulatorCore != nil else { return }
+        guard self.isOnlineWFCConnected else { return }
+        
+        self.isOnlineWFCConnected = false
+        self.updateWirelessMultiplayerState()
         
         DispatchQueue.main.async {
             let toastView = RSTToastView(text: NSLocalizedString("Disconnected from Nintendo WFC", comment: ""), detailText: nil)
@@ -2351,6 +2450,38 @@ private extension GameViewController
             
             self.show(toastView, in: self.view.window, duration: duration) // Show in window to fix not receiving touches 🤷‍♂️
             self.onlineConnectionDate = nil
+        }
+    }
+    
+    @objc func didConnectLocalWireless(with notification: Notification)
+    {
+        guard let bridge = notification.object as? MelonDSEmulatorBridge, (bridge as EmulatorBridging).gameURL == self.game?.fileURL else { return }
+        guard let emulatorCore, emulatorCore.state != .stopped else { return }
+        guard !self.isLocalWirelessConnected else { return }
+        
+        self.isLocalWirelessConnected = true
+        self.updateWirelessMultiplayerState()
+        emulatorCore.rate = 1.0 // Disable FF while local multiplayer is active.
+        
+        DispatchQueue.main.async {
+            let toastView = RSTToastView(text: NSLocalizedString("Connected to Local Multiplayer", comment: ""), detailText: NSLocalizedString("Some features will be disabled while multiplayer is active.", comment: ""))
+            self.show(toastView, in: self.view.window, duration: 3.0)
+        }
+    }
+    
+    @objc func didDisconnectLocalWireless(with notification: Notification)
+    {
+        guard let bridge = notification.object as? MelonDSEmulatorBridge, (bridge as EmulatorBridging).gameURL == self.game?.fileURL else { return }
+        guard self.isLocalWirelessConnected else { return }
+        
+        self.isLocalWirelessConnected = false
+        self.updateWirelessMultiplayerState()
+        
+        guard let emulatorCore, emulatorCore.state != .stopped else { return }
+        
+        DispatchQueue.main.async {
+            let toastView = RSTToastView(text: NSLocalizedString("Disconnected from Local Multiplayer", comment: ""), detailText: nil)
+            self.show(toastView, in: self.view.window, duration: 3.0)
         }
     }
     
@@ -2466,6 +2597,13 @@ private extension GameViewController
         Logger.main.info("Discarding current scene session, quitting emulation for game \((self.game as? Game)?.identifier ?? "nil", privacy: .public)")
         
         self.updateAutoSaveState()
+        
+        if let emulatorBridge = self.emulatorCore?.deltaCore.emulatorBridge as? MelonDSEmulatorBridge
+        {
+            MelonDSLocalMultiplayerManager.shared.stop(for: emulatorBridge)
+        }
+        self.resetWirelessMultiplayerState()
+        
         self.emulatorCore?.stop() // Required to ensure data isn't corrupted due to starting new game before previous EmulatorBridge state is reset.
     }
     

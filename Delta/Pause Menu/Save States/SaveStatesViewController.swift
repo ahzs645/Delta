@@ -8,7 +8,7 @@
 
 import UIKit
 import CoreData
-import MobileCoreServices
+import UniformTypeIdentifiers
 
 import DeltaCore
 import MelonDSDeltaCore
@@ -826,7 +826,7 @@ private extension SaveStatesViewController
     {
         self._importingSaveState = saveState
         
-        let importController = ImportController(documentTypes: [kUTTypeItem as String])
+        let importController = ImportController(documentTypes: [UTType.item.identifier])
         importController.delegate = self
         self.present(importController, animated: true, completion: nil)
     }

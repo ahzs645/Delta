@@ -116,10 +116,10 @@ private extension FriendZoneManager
         async let revenueCatPatrons: [ManagedPatron] = [] //TODO: Re-enable fetching RevenueCat patrons once we can effectively fetch Friend Zone customers at scale.
         
         let allPatrons = try await revenueCatPatrons + patreonPatrons
+        let allPatronIDs = allPatrons.map(\.identifier)
         
         try await context.perform {
-            let patronIDs = allPatrons.map(\.identifier)
-            let nonFriendZonePredicate = NSPredicate(format: "NOT (%K IN %@)", #keyPath(ManagedPatron.identifier), patronIDs)
+            let nonFriendZonePredicate = NSPredicate(format: "NOT (%K IN %@)", #keyPath(ManagedPatron.identifier), allPatronIDs)
             
             let nonFriendZonePatrons = ManagedPatron.instancesWithPredicate(nonFriendZonePredicate, inManagedObjectContext: context, type: ManagedPatron.self)
             for managedPatron in nonFriendZonePatrons
@@ -140,19 +140,20 @@ private extension FriendZoneManager
     {
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[ManagedPatron], Error>) in
             PatreonAPI.shared.fetchPatrons { (result) in
-                context.perform {
-                    do
-                    {
-                        let patrons = try result.get()
-                        
-                        let managedPatrons = patrons.compactMap { ManagedPatron(name: $0.name, identifier: $0.identifier, isPatreonPatron: true, context: context) }
+                do
+                {
+                    let patrons = try result.get()
+                    let patronInfos = patrons.map { (name: $0.name, identifier: $0.identifier) }
+                    
+                    context.perform {
+                        let managedPatrons = patronInfos.compactMap { ManagedPatron(name: $0.name, identifier: $0.identifier, isPatreonPatron: true, context: context) }
                         continuation.resume(returning: managedPatrons)
                     }
-                    catch let error as NSError
-                    {
-                        Logger.main.error("Failed to update Patreon Friend Zone patrons. \(error.localizedDescription, privacy: .public)")
-                        continuation.resume(throwing: error)
-                    }
+                }
+                catch let error as NSError
+                {
+                    Logger.main.error("Failed to update Patreon Friend Zone patrons. \(error.localizedDescription, privacy: .public)")
+                    continuation.resume(throwing: error)
                 }
             }
         }

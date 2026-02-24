@@ -9,7 +9,7 @@
 import UIKit
 
 // Access UIWindowScene.isStageManagerEnabled
-@_spi(Internal) import DeltaCore
+@preconcurrency @_spi(Internal) import DeltaCore
 
 private extension UIImage
 {

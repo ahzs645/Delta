@@ -7,6 +7,8 @@
 //
 
 import Foundation
+import MultipeerConnectivity
+import DeltaCore
 import MelonDSDeltaCore
 
 private extension URL
@@ -101,5 +103,502 @@ class WFCManager
         UserDefaults.standard.removeObject(forKey: MelonDS.wfcFlagsUserDefaultsKey)
         
         UserDefaults.standard.didShowChooseWFCServerAlert = false
+    }
+}
+
+private extension Data
+{
+    mutating func appendInteger<T: FixedWidthInteger>(_ value: T)
+    {
+        var littleEndianValue = value.littleEndian
+        Swift.withUnsafeBytes(of: &littleEndianValue) { bytes in
+            self.append(bytes.bindMemory(to: UInt8.self))
+        }
+    }
+    
+    func integer<T: FixedWidthInteger>(at offset: Int, as type: T.Type) -> T?
+    {
+        let length = MemoryLayout<T>.size
+        guard offset >= 0, (offset + length) <= self.count else { return nil }
+        
+        var value: T = 0
+        _ = Swift.withUnsafeMutableBytes(of: &value) { buffer in
+            self.copyBytes(to: buffer, from: offset..<(offset + length))
+        }
+        
+        return T(littleEndian: value)
+    }
+}
+
+final class MelonDSLocalMultiplayerManager: NSObject
+{
+    static let shared = MelonDSLocalMultiplayerManager()
+    
+    static let didConnectNotification = Notification.Name("com.rileytestut.delta.melonds.localmultiplayer.didConnect")
+    static let didDisconnectNotification = Notification.Name("com.rileytestut.delta.melonds.localmultiplayer.didDisconnect")
+
+    struct DiagnosticsSnapshot
+    {
+        let localPeerIdentifier: String
+        let gameHash: String?
+        let connectedPeers: [String]
+        let connectingPeers: [String]
+        let invitedPeers: [String]
+        let isTransportActive: Bool
+    }
+    
+    private static let discoveryGameHashKey = "g"
+    private static let peerIdentifierDefaultsKey = "melondsLocalMultiplayerPeerDisplayName"
+    private static let serviceType = "deltamelonds"
+    
+    private let peerID: MCPeerID
+    private let queue = DispatchQueue(label: "com.rileytestut.Delta.MelonDS.LocalMultiplayer")
+    
+    private weak var bridge: MelonDSEmulatorBridge?
+    private var gameHash: UInt64?
+    
+    private var session: MCSession?
+    private var advertiser: MCNearbyServiceAdvertiser?
+    private var browser: MCNearbyServiceBrowser?
+    private var packetObserver: NSObjectProtocol?
+    
+    private var invitedPeers = Set<String>()
+    private var connectingPeers = Set<String>()
+    private var connectedPeers = Set<String>()
+    
+    override private init()
+    {
+        self.peerID = Self.makePeerID()
+        super.init()
+    }
+    
+    func start(for bridge: MelonDSEmulatorBridge)
+    {
+        guard let gameURL = (bridge as EmulatorBridging).gameURL else {
+            self.stop(for: bridge)
+            return
+        }
+        
+        let gameHash = Self.gameHash(for: gameURL)
+        
+        self.queue.async {
+            if let activeBridge = self.bridge,
+               activeBridge === bridge,
+               self.gameHash == gameHash,
+               self.session != nil
+            {
+                return
+            }
+            
+            self.stopLocked(postDisconnect: false)
+            
+            self.bridge = bridge
+            self.gameHash = gameHash
+            
+            let session = MCSession(peer: self.peerID, securityIdentity: nil, encryptionPreference: .none)
+            session.delegate = self
+            self.session = session
+            
+            let discoveryInfo = [Self.discoveryGameHashKey: Self.hexString(for: gameHash)]
+            
+            let advertiser = MCNearbyServiceAdvertiser(peer: self.peerID, discoveryInfo: discoveryInfo, serviceType: Self.serviceType)
+            advertiser.delegate = self
+            advertiser.startAdvertisingPeer()
+            self.advertiser = advertiser
+            
+            let browser = MCNearbyServiceBrowser(peer: self.peerID, serviceType: Self.serviceType)
+            browser.delegate = self
+            browser.startBrowsingForPeers()
+            self.browser = browser
+            
+            self.packetObserver = NotificationCenter.default.addObserver(forName: MelonDSEmulatorBridge.didProduceMultiplayerPacketNotification, object: bridge, queue: nil) { [weak self] notification in
+                self?.handleOutboundPacket(notification)
+            }
+        }
+    }
+    
+    func stop(for bridge: MelonDSEmulatorBridge? = nil)
+    {
+        self.queue.async {
+            if let bridge, let activeBridge = self.bridge, activeBridge !== bridge
+            {
+                return
+            }
+            
+            self.stopLocked(postDisconnect: true)
+        }
+    }
+
+    func diagnosticsSnapshot() -> DiagnosticsSnapshot
+    {
+        self.queue.sync {
+            DiagnosticsSnapshot(
+                localPeerIdentifier: self.peerID.displayName,
+                gameHash: self.gameHash.map(Self.hexString(for:)),
+                connectedPeers: self.connectedPeers.sorted(),
+                connectingPeers: self.connectingPeers.sorted(),
+                invitedPeers: self.invitedPeers.sorted(),
+                isTransportActive: (self.bridge != nil && self.session != nil)
+            )
+        }
+    }
+    
+    private func stopLocked(postDisconnect: Bool)
+    {
+        let activeBridge = self.bridge
+        
+        if let packetObserver = self.packetObserver
+        {
+            NotificationCenter.default.removeObserver(packetObserver)
+            self.packetObserver = nil
+        }
+        
+        self.browser?.stopBrowsingForPeers()
+        self.browser?.delegate = nil
+        self.browser = nil
+        
+        self.advertiser?.stopAdvertisingPeer()
+        self.advertiser?.delegate = nil
+        self.advertiser = nil
+        
+        self.session?.disconnect()
+        self.session?.delegate = nil
+        self.session = nil
+        
+        self.invitedPeers.removeAll()
+        self.connectingPeers.removeAll()
+        
+        let hadConnections = !self.connectedPeers.isEmpty
+        self.connectedPeers.removeAll()
+        
+        self.gameHash = nil
+        self.bridge = nil
+        
+        if postDisconnect && hadConnections
+        {
+            self.post(notification: Self.didDisconnectNotification, bridge: activeBridge)
+        }
+    }
+    
+    private func handleOutboundPacket(_ notification: Notification)
+    {
+        self.queue.async {
+            guard let bridge = self.bridge,
+                  let emittedBridge = notification.object as? MelonDSEmulatorBridge,
+                  emittedBridge === bridge,
+                  let session = self.session,
+                  !session.connectedPeers.isEmpty,
+                  let gameHash = self.gameHash,
+                  let payload = notification.userInfo?["packet"] as? Data,
+                  let typeNumber = notification.userInfo?["type"] as? NSNumber,
+                  let type = MelonDSMultiplayerPacketType(rawValue: typeNumber.intValue),
+                  let timestampNumber = notification.userInfo?["timestamp"] as? NSNumber,
+                  let envelope = PacketEnvelope.encode(
+                    payload: payload,
+                    type: type,
+                    timestamp: timestampNumber.uint64Value,
+                    gameHash: gameHash,
+                    aid: {
+                        if let aidNumber = notification.userInfo?["aid"] as? NSNumber
+                        {
+                            return UInt16(truncatingIfNeeded: aidNumber.uint64Value)
+                        }
+                        
+                        return 0
+                    }()
+                  )
+            else {
+                return
+            }
+            
+            do
+            {
+                try session.send(envelope, toPeers: session.connectedPeers, with: .unreliable)
+            }
+            catch
+            {
+                Logger.main.error("Failed to send local multiplayer packet. \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+    
+    private func handleInboundPacket(_ data: Data)
+    {
+        guard let envelope = PacketEnvelope.decode(data),
+              let expectedGameHash = self.gameHash,
+              envelope.gameHash == expectedGameHash
+        else {
+            return
+        }
+        
+        MelonDSEmulatorBridge.enqueueMultiplayerPacket(envelope.payload, type: envelope.type, timestamp: envelope.timestamp, aid: envelope.aid)
+    }
+    
+    private func refreshConnectedPeersLocked()
+    {
+        let currentlyConnected = Set(self.session?.connectedPeers.map(\.displayName) ?? [])
+        let wasConnected = !self.connectedPeers.isEmpty
+        let isConnected = !currentlyConnected.isEmpty
+        
+        self.connectedPeers = currentlyConnected
+        
+        if isConnected && !wasConnected
+        {
+            self.post(notification: Self.didConnectNotification, bridge: self.bridge)
+        }
+        else if !isConnected && wasConnected
+        {
+            self.post(notification: Self.didDisconnectNotification, bridge: self.bridge)
+        }
+    }
+    
+    private func post(notification: Notification.Name, bridge: MelonDSEmulatorBridge?)
+    {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: notification, object: bridge, userInfo: nil)
+        }
+    }
+    
+    private func makeInvitationContext() -> Data?
+    {
+        guard let gameHash = self.gameHash else { return nil }
+        let context = InvitationContext(version: 1, gameHashHex: Self.hexString(for: gameHash))
+        return try? JSONEncoder().encode(context)
+    }
+    
+    private func matchesInvitationContext(_ contextData: Data?) -> Bool
+    {
+        guard let gameHash = self.gameHash,
+              let contextData,
+              let context = try? JSONDecoder().decode(InvitationContext.self, from: contextData),
+              context.version == 1,
+              let invitedGameHash = UInt64(context.gameHashHex, radix: 16)
+        else {
+            return false
+        }
+        
+        return invitedGameHash == gameHash
+    }
+    
+    private func shouldInvite(_ peerID: MCPeerID, discoveryInfo: [String : String]?) -> Bool
+    {
+        guard peerID != self.peerID else { return false }
+        guard self.matchesDiscoveryInfo(discoveryInfo) else { return false }
+        
+        let peerName = peerID.displayName
+        guard !self.connectedPeers.contains(peerName),
+              !self.connectingPeers.contains(peerName),
+              !self.invitedPeers.contains(peerName)
+        else {
+            return false
+        }
+        
+        // Deterministic tie-breaker so only one side initiates invitations.
+        return self.peerID.displayName < peerName
+    }
+    
+    private func matchesDiscoveryInfo(_ discoveryInfo: [String : String]?) -> Bool
+    {
+        guard let gameHash = self.gameHash,
+              let advertisedGameHashString = discoveryInfo?[Self.discoveryGameHashKey],
+              let advertisedGameHash = UInt64(advertisedGameHashString, radix: 16)
+        else {
+            return false
+        }
+        
+        return advertisedGameHash == gameHash
+    }
+}
+
+private extension MelonDSLocalMultiplayerManager
+{
+    struct InvitationContext: Codable
+    {
+        var version: Int
+        var gameHashHex: String
+    }
+    
+    struct PacketEnvelope
+    {
+        private static let magic: UInt32 = 0x4E494649 // "NIFI"
+        private static let version: UInt16 = 1
+        private static let headerLength = 30
+        
+        var type: MelonDSMultiplayerPacketType
+        var aid: UInt16
+        var timestamp: UInt64
+        var gameHash: UInt64
+        var payload: Data
+        
+        static func encode(payload: Data, type: MelonDSMultiplayerPacketType, timestamp: UInt64, gameHash: UInt64, aid: UInt16) -> Data?
+        {
+            guard payload.count <= Int(UInt32.max) else { return nil }
+            
+            var data = Data()
+            data.reserveCapacity(Self.headerLength + payload.count)
+            data.appendInteger(Self.magic)
+            data.appendInteger(Self.version)
+            data.appendInteger(UInt16(type.rawValue))
+            data.appendInteger(timestamp)
+            data.appendInteger(gameHash)
+            data.appendInteger(aid)
+            data.appendInteger(UInt32(payload.count))
+            data.append(payload)
+            return data
+        }
+        
+        static func decode(_ data: Data) -> PacketEnvelope?
+        {
+            guard let magic = data.integer(at: 0, as: UInt32.self), magic == Self.magic,
+                  let version = data.integer(at: 4, as: UInt16.self), version == Self.version,
+                  let rawType = data.integer(at: 6, as: UInt16.self),
+                  let timestamp = data.integer(at: 8, as: UInt64.self),
+                  let gameHash = data.integer(at: 16, as: UInt64.self),
+                  let aid = data.integer(at: 24, as: UInt16.self),
+                  let payloadLength = data.integer(at: 26, as: UInt32.self),
+                  let type = MelonDSMultiplayerPacketType(rawValue: Int(rawType))
+            else {
+                return nil
+            }
+            
+            let payloadOffset = Self.headerLength
+            let payloadSize = Int(payloadLength)
+            guard (payloadOffset + payloadSize) <= data.count else { return nil }
+            
+            let payload = data.subdata(in: payloadOffset..<(payloadOffset + payloadSize))
+            return PacketEnvelope(type: type, aid: aid, timestamp: timestamp, gameHash: gameHash, payload: payload)
+        }
+    }
+    
+    static func makePeerID() -> MCPeerID
+    {
+        if let peerDisplayName = UserDefaults.standard.string(forKey: Self.peerIdentifierDefaultsKey)
+        {
+            return MCPeerID(displayName: peerDisplayName)
+        }
+        
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(8)
+        let peerDisplayName = "delta-\(suffix)"
+        UserDefaults.standard.set(peerDisplayName, forKey: Self.peerIdentifierDefaultsKey)
+        
+        return MCPeerID(displayName: peerDisplayName)
+    }
+    
+    static func gameHash(for gameURL: URL) -> UInt64
+    {
+        var identifier = gameURL.lastPathComponent.lowercased()
+        
+        if let resourceValues = try? gameURL.resourceValues(forKeys: [.fileSizeKey]),
+           let fileSize = resourceValues.fileSize
+        {
+            identifier += "|\(fileSize)"
+        }
+        
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        
+        for byte in identifier.utf8
+        {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        
+        return hash
+    }
+    
+    static func hexString(for value: UInt64) -> String
+    {
+        return String(format: "%016llx", value)
+    }
+}
+
+extension MelonDSLocalMultiplayerManager: MCNearbyServiceAdvertiserDelegate
+{
+    func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void)
+    {
+        self.queue.async {
+            guard self.matchesInvitationContext(context),
+                  let session = self.session
+            else {
+                invitationHandler(false, nil)
+                return
+            }
+            
+            self.connectingPeers.insert(peerID.displayName)
+            invitationHandler(true, session)
+        }
+    }
+}
+
+extension MelonDSLocalMultiplayerManager: MCNearbyServiceBrowserDelegate
+{
+    func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String : String]?)
+    {
+        self.queue.async {
+            guard self.shouldInvite(peerID, discoveryInfo: info),
+                  let session = self.session
+            else {
+                return
+            }
+            
+            self.invitedPeers.insert(peerID.displayName)
+            browser.invitePeer(peerID, to: session, withContext: self.makeInvitationContext(), timeout: 10)
+        }
+    }
+    
+    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID)
+    {
+        self.queue.async {
+            self.invitedPeers.remove(peerID.displayName)
+            self.connectingPeers.remove(peerID.displayName)
+        }
+    }
+}
+
+extension MelonDSLocalMultiplayerManager: MCSessionDelegate
+{
+    func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState)
+    {
+        self.queue.async {
+            let peerName = peerID.displayName
+            
+            switch state
+            {
+            case .connected:
+                self.invitedPeers.remove(peerName)
+                self.connectingPeers.remove(peerName)
+                
+            case .connecting:
+                self.connectingPeers.insert(peerName)
+                
+            case .notConnected:
+                self.invitedPeers.remove(peerName)
+                self.connectingPeers.remove(peerName)
+                
+            @unknown default:
+                self.invitedPeers.remove(peerName)
+                self.connectingPeers.remove(peerName)
+            }
+            
+            self.refreshConnectedPeersLocked()
+        }
+    }
+    
+    func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID)
+    {
+        self.queue.async {
+            self.handleInboundPacket(data)
+        }
+    }
+    
+    func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID)
+    {
+    }
+    
+    func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress)
+    {
+    }
+    
+    func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?)
+    {
     }
 }

@@ -10,19 +10,38 @@ import UIKit
 
 import DeltaCore
 
+extension UISceneSession.Role
+{
+    static var deltaWindowExternalDisplay: UISceneSession.Role {
+        if #available(iOS 16, *)
+        {
+            return .windowExternalDisplayNonInteractive
+        }
+        else
+        {
+            return .windowExternalDisplay
+        }
+    }
+}
+
 extension UIApplication
 {
     var isExternalDisplayConnected: Bool {
         guard Settings.supportsExternalDisplays else { return false }
         
-        let scene = UIApplication.shared.connectedScenes.first { $0.session.role == .windowExternalDisplay }
-        return scene != nil
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let hasExternalScreen = scenes.contains { scene in
+            scene.session.role == .deltaWindowExternalDisplay && scene.screen != UIScreen.main
+        }
+        return hasExternalScreen
     }
     
     var externalDisplayScene: ExternalDisplayScene? {
         guard Settings.supportsExternalDisplays else { return nil }
         
-        let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? ExternalDisplayScene }).first(where: { $0.session.role == .windowExternalDisplay })
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? ExternalDisplayScene }
+            .first(where: { $0.session.role == .deltaWindowExternalDisplay && $0.screen != UIScreen.main })
         return scene
     }
 }
