@@ -60,16 +60,44 @@ create_libslirp_version_header() {
 HDR
 }
 
-ci_workspace="${CI_WORKSPACE:-$PWD}"
+# Use CI_PRIMARY_REPOSITORY_PATH (the actual repo root in Xcode Cloud),
+# falling back to CI_WORKSPACE and PWD for local usage.
+repo_root="${CI_PRIMARY_REPOSITORY_PATH:-${CI_WORKSPACE:-$PWD}}"
 
-echo "[ci_pre_xcodebuild] Using workspace: $ci_workspace"
+echo "[ci_pre_xcodebuild] Using repo root: $repo_root"
 
-while IFS= read -r -d '' package_file; do
-  patch_rcheevos_package "$package_file"
-done < <(find "$ci_workspace" -type f -path '*/SourcePackages/checkouts/rcheevos/Package.swift' -print0 2>/dev/null)
+# Ensure nested submodules are fully initialized (melonDS is a submodule
+# inside the MelonDSDeltaCore submodule and may not be auto-initialized).
+if command -v git &>/dev/null && [[ -d "$repo_root/.git" ]]; then
+  echo "[ci_pre_xcodebuild] Initializing nested submodules..."
+  git -C "$repo_root" submodule update --init --recursive || true
+fi
 
-while IFS= read -r -d '' libslirp_header; do
-  create_libslirp_version_header "$(dirname "$libslirp_header")"
-done < <(find "$ci_workspace" -type f -name libslirp.h -path '*/libslirp*/*' -print0 2>/dev/null)
+# --- rcheevos modulemap fix ---
+# Search the repo tree and DerivedData for the rcheevos Package.swift.
+search_roots=("$repo_root")
+if [[ -n "${CI_DERIVED_DATA_PATH:-}" ]]; then
+  search_roots+=("$CI_DERIVED_DATA_PATH")
+fi
+
+for search_root in "${search_roots[@]}"; do
+  while IFS= read -r -d '' package_file; do
+    patch_rcheevos_package "$package_file"
+  done < <(find "$search_root" -type f -path '*/SourcePackages/checkouts/rcheevos/Package.swift' -print0 2>/dev/null)
+done
+
+# --- libslirp-version.h fix ---
+# 1. Try the known path first (most reliable).
+known_libslirp_src="$repo_root/Cores/MelonDSDeltaCore/melonDS/src/net/libslirp/src"
+if [[ -d "$known_libslirp_src" ]]; then
+  create_libslirp_version_header "$known_libslirp_src"
+fi
+
+# 2. Fallback: search the whole tree for any other libslirp.h copies.
+for search_root in "${search_roots[@]}"; do
+  while IFS= read -r -d '' libslirp_header; do
+    create_libslirp_version_header "$(dirname "$libslirp_header")"
+  done < <(find "$search_root" -type f -name libslirp.h -path '*/libslirp*/*' -print0 2>/dev/null)
+done
 
 echo "[ci_pre_xcodebuild] Done."
