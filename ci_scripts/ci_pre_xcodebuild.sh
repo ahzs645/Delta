@@ -73,6 +73,58 @@ if command -v git &>/dev/null && [[ -d "$repo_root/.git" ]]; then
   git -C "$repo_root" submodule update --init --recursive || true
 fi
 
+# --- CocoaPods module-map fix ---
+# Xcode's dependency scanner needs module maps before any target is built.
+# The xcconfig files have been updated to reference the source copies in
+# Pods/Target Support Files/, but as a safety net we also rewrite any
+# remaining PODS_CONFIGURATION_BUILD_DIR references in the committed
+# xcconfig files (in case pod install was run without the Podfile hook).
+echo "[ci_pre_xcodebuild] Fixing CocoaPods module-map paths in xcconfigs..."
+pods_dir="$repo_root/Pods"
+if [[ -d "$pods_dir/Target Support Files" ]]; then
+  while IFS= read -r -d '' xcconfig; do
+    if grep -q 'PODS_CONFIGURATION_BUILD_DIR.*\.modulemap' "$xcconfig" 2>/dev/null; then
+      # For each build-dir modulemap ref, find the matching source modulemap.
+      python3 - "$xcconfig" "$pods_dir" <<'PYFIX'
+import pathlib, re, sys, glob
+
+xcconfig = pathlib.Path(sys.argv[1])
+pods_dir = pathlib.Path(sys.argv[2])
+text = xcconfig.read_text()
+
+def replace_modulemap(m):
+    pod_dir = m.group(1)
+    source_dir = pods_dir / "Target Support Files" / pod_dir
+    maps = list(source_dir.glob("*.modulemap"))
+    if maps:
+        return f'${{PODS_ROOT}}/Target Support Files/{pod_dir}/{maps[0].name}'
+    return m.group(0)
+
+updated = re.sub(
+    r'\$\{PODS_CONFIGURATION_BUILD_DIR\}/([^/]+)/[^"]+\.modulemap',
+    replace_modulemap,
+    text,
+)
+
+# Add source-dir entries to SWIFT_INCLUDE_PATHS if not already present.
+swift_match = re.search(r'^(SWIFT_INCLUDE_PATHS\s*=\s*.*)$', updated, re.M)
+if swift_match:
+    line = swift_match.group(1)
+    build_dirs = re.findall(r'"\$\{PODS_CONFIGURATION_BUILD_DIR\}/([^"/]+)"', line)
+    for d in dict.fromkeys(build_dirs):
+        entry = f'"${{PODS_ROOT}}/Target Support Files/{d}"'
+        if entry not in line:
+            line += " " + entry
+    updated = updated[:swift_match.start()] + line + updated[swift_match.end():]
+
+if updated != text:
+    xcconfig.write_text(updated)
+    print(f"  Patched: {xcconfig.name}")
+PYFIX
+    fi
+  done < <(find "$pods_dir/Target Support Files" -name '*.xcconfig' -print0 2>/dev/null)
+fi
+
 # --- rcheevos modulemap fix ---
 # Search the repo tree and DerivedData for the rcheevos Package.swift.
 search_roots=("$repo_root")

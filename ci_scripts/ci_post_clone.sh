@@ -5,30 +5,59 @@ echo "[ci_post_clone] Running post-clone setup..."
 
 repo_root="${CI_PRIMARY_REPOSITORY_PATH:-${CI_WORKSPACE:-$PWD}}"
 
-# Rewrite any SSH submodule URLs to HTTPS so Xcode Cloud can clone them
-# without SSH key authentication. The .gitmodules file should already use
-# HTTPS, but git may have cached older SSH URLs in .git/config.
+rewrite_ssh_urls() {
+  local dir="$1"
+  # Rewrite any SSH submodule URLs cached in .git/config to HTTPS.
+  git -C "$dir" config --local --get-regexp 'submodule\..*\.url' 2>/dev/null | while read -r key url; do
+    new_url=$(echo "$url" | sed 's|git@github\.com:|https://github.com/|')
+    if [ "$url" != "$new_url" ]; then
+      echo "  Rewriting $key: $url -> $new_url"
+      git -C "$dir" config "$key" "$new_url"
+    fi
+  done || true
+}
+
 if command -v git &>/dev/null && [[ -d "$repo_root/.git" ]]; then
-  echo "[ci_post_clone] Ensuring all submodule URLs use HTTPS..."
-  git -C "$repo_root" submodule foreach --quiet \
-    'url=$(git -C "$toplevel" config submodule."$name".url 2>/dev/null || true)
-     if [ -n "$url" ]; then
+  # 1. Register submodules and sync URLs from .gitmodules (which uses HTTPS).
+  echo "[ci_post_clone] Registering submodules..."
+  git -C "$repo_root" submodule init
+
+  # 2. Sync URLs from .gitmodules → .git/config and force any stale SSH
+  #    entries to HTTPS.
+  echo "[ci_post_clone] Syncing submodule URLs..."
+  git -C "$repo_root" submodule sync
+  rewrite_ssh_urls "$repo_root"
+
+  # 3. Clone first-level submodules.
+  echo "[ci_post_clone] Updating first-level submodules..."
+  git -C "$repo_root" submodule update
+
+  # 4. Handle nested submodules (e.g. melonDS inside MelonDSDeltaCore).
+  #    Their .gitmodules may contain SSH URLs that need rewriting before the
+  #    recursive update can succeed.
+  echo "[ci_post_clone] Initialising nested submodules..."
+  git -C "$repo_root" submodule foreach --recursive \
+    'git submodule init 2>/dev/null || true
+     git submodule sync 2>/dev/null || true' 2>/dev/null || true
+
+  # Rewrite any SSH URLs introduced by nested .gitmodules.
+  git -C "$repo_root" submodule foreach --recursive \
+    'git config --local --get-regexp "submodule\..*\.url" 2>/dev/null | while read -r key url; do
        new_url=$(echo "$url" | sed "s|git@github\.com:|https://github.com/|")
        if [ "$url" != "$new_url" ]; then
-         echo "  Rewriting $name: $url -> $new_url"
-         git -C "$toplevel" config submodule."$name".url "$new_url"
+         echo "  Rewriting nested $key: $url -> $new_url"
+         git config "$key" "$new_url"
        fi
-     fi' 2>/dev/null || true
-  git -C "$repo_root" submodule sync --recursive 2>/dev/null || true
+     done || true' 2>/dev/null || true
 
-  echo "[ci_post_clone] Recursively initializing submodules..."
-  git -C "$repo_root" submodule update --init --recursive
+  git -C "$repo_root" submodule update --init --recursive || {
+    echo "[ci_post_clone] WARNING: recursive submodule update had failures (non-fatal)"
+  }
 fi
 
-# Install CocoaPods dependencies. The Pods directory is committed, but local
-# pods (Roxas, Harmony) reference submodule paths that must exist first.
-# Running pod install ensures the Pods project is consistent after submodule
-# initialization.
+# Install CocoaPods dependencies if available. The Pods directory is committed,
+# but running pod install after submodule init keeps the project consistent
+# (local pods Roxas/Harmony reference submodule paths).
 if command -v pod &>/dev/null && [[ -f "$repo_root/Podfile" ]]; then
   echo "[ci_post_clone] Installing CocoaPods dependencies..."
   cd "$repo_root"
