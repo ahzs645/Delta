@@ -25,4 +25,59 @@ post_install do |installer|
             config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
         end
     end
+
+    # Fix module map paths so Xcode's dependency scanner can find them before
+    # pod targets are built.  CocoaPods places module maps at
+    # PODS_CONFIGURATION_BUILD_DIR (the build-products dir), but the scanner
+    # runs before targets compile.  Rewrite -fmodule-map-file= flags to
+    # reference the committed copies in Pods/Target Support Files/.
+    fix_xcconfig = lambda do |xcconfig_path|
+        next unless File.exist?(xcconfig_path)
+        content = File.read(xcconfig_path)
+        sandbox_root = installer.sandbox.root.to_s
+
+        # Replace each build-dir modulemap ref with the source-dir copy.
+        content.gsub!(/\$\{PODS_CONFIGURATION_BUILD_DIR\}\/([^\/]+)\/([^"]+\.modulemap)/) do
+            pod_dir = $1
+            map_file = $2
+            source_dir = File.join(sandbox_root, 'Target Support Files', pod_dir)
+            # Prefer the actual file on disk (handles naming mismatches like
+            # SQLite.swift.modulemap vs SQLite.modulemap).
+            actual = Dir.glob(File.join(source_dir, '*.modulemap')).first
+            if actual
+                "${PODS_ROOT}/Target Support Files/#{pod_dir}/#{File.basename(actual)}"
+            else
+                "${PODS_ROOT}/Target Support Files/#{pod_dir}/#{map_file}"
+            end
+        end
+
+        # Add source-dir entries to SWIFT_INCLUDE_PATHS so the Swift compiler
+        # can also find modulemaps before pods are built.
+        if content[/^SWIFT_INCLUDE_PATHS\s*=/]
+            build_dirs = content.scan(/"\$\{PODS_CONFIGURATION_BUILD_DIR\}\/([^"\/]+)"/).flatten.uniq
+            source_entries = build_dirs.map { |d|
+                "\"${PODS_ROOT}/Target Support Files/#{d}\""
+            }
+            unless source_entries.empty?
+                content.sub!(
+                    /^(SWIFT_INCLUDE_PATHS\s*=\s*.*)$/,
+                    "\\1 #{source_entries.join(' ')}"
+                )
+            end
+        end
+
+        File.write(xcconfig_path, content)
+    end
+
+    installer.aggregate_targets.each do |aggregate_target|
+        aggregate_target.xcconfigs.each do |config_name, _|
+            fix_xcconfig.call(aggregate_target.xcconfig_path(config_name))
+        end
+    end
+
+    installer.pod_targets.each do |pod_target|
+        pod_target.build_settings.each do |config_name, _|
+            fix_xcconfig.call(pod_target.xcconfig_path(config_name))
+        end
+    end
 end
