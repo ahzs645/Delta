@@ -163,3 +163,24 @@ The Delta codebase is distributed under the **AGPLv3 license**.
 * Mastodon: [@mattaltgear@mstdn.social](https://mstdn.social/mattaltgear)
 * Threads: [@mattaltgear](https://www.threads.com/@mattaltgear)
 * Bluesky: [@mattaltgear.bsky.social](https://bsky.app/profile/mattaltgear.bsky.social)
+
+
+### Troubleshooting missing-type build errors
+
+If Xcode shows many errors like `Cannot find type 'Syncable' in scope`, `Cannot find 'DropboxService' in scope`, or SQLite symbol errors in `GamesDatabase.swift`, one or more Git submodules are usually missing or empty.
+
+Run the dependency preflight script:
+
+```sh
+./ci_scripts/verify_dependencies.sh
+```
+
+If it reports missing dependencies, initialize submodules and reinstall pods:
+
+```sh
+git submodule update --init --recursive
+pod install
+```
+
+Then reopen `Delta.xcworkspace`.
+
