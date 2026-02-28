@@ -108,16 +108,10 @@ prebuild_pods_target() {
   fi
 
   local configuration="${CONFIGURATION:-Release}"
-  local sdk="${SDKROOT:-iphoneos}"
-  local destination="generic/platform=iOS"
-
-  case "$sdk" in
-    *simulator*) destination="generic/platform=iOS Simulator" ;;
-    *appletvos*) destination="generic/platform=tvOS" ;;
-    *watchsimulator*) destination="generic/platform=watchOS Simulator" ;;
-    *watchos*) destination="generic/platform=watchOS" ;;
-    *macosx*) destination="generic/platform=macOS" ;;
-  esac
+  local sdk="${SDKROOT:-${SDK_NAME:-iphoneos}}"
+  if [[ "$sdk" == */* ]]; then
+    sdk="${SDK_NAME:-iphoneos}"
+  fi
 
   echo "[ci_pre_xcodebuild] Prebuilding $pods_target ($configuration, $sdk)..."
 
@@ -126,16 +120,20 @@ prebuild_pods_target() {
     -project "$pods_project"
     -target "$pods_target"
     -configuration "$configuration"
-    -sdk "$sdk"
-    -destination "$destination"
   )
+
+  if [[ -n "$sdk" ]]; then
+    build_cmd+=( -sdk "$sdk" )
+  fi
 
   if [[ -n "${CI_DERIVED_DATA_PATH:-}" ]]; then
     build_cmd+=( -derivedDataPath "$CI_DERIVED_DATA_PATH" )
   fi
 
   build_cmd+=( build )
-  "${build_cmd[@]}"
+  if ! "${build_cmd[@]}"; then
+    echo "[ci_pre_xcodebuild] WARNING: Pods prebuild failed; continuing with main build."
+  fi
 }
 
 # Use CI_PRIMARY_REPOSITORY_PATH (the actual repo root in Xcode Cloud),
