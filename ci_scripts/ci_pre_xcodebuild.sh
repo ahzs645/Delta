@@ -60,6 +60,84 @@ create_libslirp_version_header() {
 HDR
 }
 
+run_dependency_preflight() {
+  local verify_script="$repo_root/ci_scripts/verify_dependencies.sh"
+
+  if [[ ! -f "$verify_script" ]]; then
+    echo "[ci_pre_xcodebuild] WARNING: dependency preflight script not found at $verify_script"
+    return 0
+  fi
+
+  echo "[ci_pre_xcodebuild] Verifying required dependency checkouts..."
+
+  if [[ -x "$verify_script" ]]; then
+    "$verify_script"
+  else
+    bash "$verify_script"
+  fi
+}
+
+ensure_pods_installed() {
+  if [[ ! -f "$repo_root/Podfile" ]]; then
+    return 0
+  fi
+
+  if ! command -v pod &>/dev/null; then
+    echo "[ci_pre_xcodebuild] ERROR: CocoaPods is required but 'pod' is unavailable in PATH."
+    echo "[ci_pre_xcodebuild] ERROR: Missing pod install can cause Harmony/SQLite symbol resolution failures."
+    exit 1
+  fi
+
+  echo "[ci_pre_xcodebuild] Installing/updating CocoaPods dependencies..."
+  (
+    cd "$repo_root"
+    pod install
+  )
+}
+
+prebuild_pods_target() {
+  local pods_project="$repo_root/Pods/Pods.xcodeproj"
+  if [[ ! -d "$pods_project" ]]; then
+    echo "[ci_pre_xcodebuild] WARNING: Pods project not found at $pods_project"
+    return 0
+  fi
+
+  local pods_target="Pods-Delta"
+  if [[ "${CI_XCODE_SCHEME:-}" == "DeltaPreviews" ]]; then
+    pods_target="Pods-DeltaPreviews"
+  fi
+
+  local configuration="${CONFIGURATION:-Release}"
+  local sdk="${SDKROOT:-iphoneos}"
+  local destination="generic/platform=iOS"
+
+  case "$sdk" in
+    *simulator*) destination="generic/platform=iOS Simulator" ;;
+    *appletvos*) destination="generic/platform=tvOS" ;;
+    *watchsimulator*) destination="generic/platform=watchOS Simulator" ;;
+    *watchos*) destination="generic/platform=watchOS" ;;
+    *macosx*) destination="generic/platform=macOS" ;;
+  esac
+
+  echo "[ci_pre_xcodebuild] Prebuilding $pods_target ($configuration, $sdk)..."
+
+  local -a build_cmd=(
+    xcodebuild
+    -project "$pods_project"
+    -target "$pods_target"
+    -configuration "$configuration"
+    -sdk "$sdk"
+    -destination "$destination"
+  )
+
+  if [[ -n "${CI_DERIVED_DATA_PATH:-}" ]]; then
+    build_cmd+=( -derivedDataPath "$CI_DERIVED_DATA_PATH" )
+  fi
+
+  build_cmd+=( build )
+  "${build_cmd[@]}"
+}
+
 # Use CI_PRIMARY_REPOSITORY_PATH (the actual repo root in Xcode Cloud),
 # falling back to CI_WORKSPACE and PWD for local usage.
 repo_root="${CI_PRIMARY_REPOSITORY_PATH:-${CI_WORKSPACE:-$PWD}}"
@@ -72,6 +150,9 @@ if command -v git &>/dev/null && [[ -d "$repo_root/.git" ]]; then
   echo "[ci_pre_xcodebuild] Initializing nested submodules..."
   git -C "$repo_root" submodule update --init --recursive || true
 fi
+
+run_dependency_preflight
+ensure_pods_installed
 
 # --- CocoaPods module-map fix ---
 # Xcode's dependency scanner needs module maps before any target is built.
@@ -151,5 +232,7 @@ for search_root in "${search_roots[@]}"; do
     create_libslirp_version_header "$(dirname "$libslirp_header")"
   done < <(find "$search_root" -type f -name libslirp.h -path '*/libslirp*/*' -print0 2>/dev/null)
 done
+
+prebuild_pods_target
 
 echo "[ci_pre_xcodebuild] Done."
