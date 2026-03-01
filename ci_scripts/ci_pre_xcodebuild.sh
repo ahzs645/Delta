@@ -106,38 +106,45 @@ prebuild_pods_target() {
     return 0
   fi
 
-  local pods_target="Pods-Delta"
-  if [[ "${CI_XCODE_SCHEME:-}" == "DeltaPreviews" ]]; then
-    pods_target="Pods-DeltaPreviews"
-  fi
-
+  local scheme="${CI_XCODE_SCHEME:-Delta}"
   local configuration="${CONFIGURATION:-Release}"
   local sdk="${SDKROOT:-${SDK_NAME:-iphoneos}}"
   if [[ "$sdk" == */* ]]; then
     sdk="${SDK_NAME:-iphoneos}"
   fi
 
-  echo "[ci_pre_xcodebuild] Prebuilding $pods_target ($configuration, $sdk)..."
+  local derived_data_root="${CI_DERIVED_DATA_PATH:-$repo_root/DerivedData}"
+  local archive_root="$derived_data_root/Build/Intermediates.noindex/ArchiveIntermediates/$scheme"
+  local build_dir="$archive_root/BuildProductsPath"
+  local obj_root="$archive_root/IntermediateBuildFilesPath"
 
-  local -a build_cmd=(
-    xcodebuild
-    -project "$pods_project"
-    -target "$pods_target"
-    -configuration "$configuration"
-  )
-
-  if [[ -n "$sdk" ]]; then
-    build_cmd+=( -sdk "$sdk" )
+  local -a targets=()
+  if [[ "$scheme" == "DeltaPreviews" ]]; then
+    targets=("Roxas" "Pods-DeltaPreviews")
+  else
+    targets=("Harmony" "SQLite.swift" "Pods-Delta")
   fi
 
-  if [[ -n "${CI_DERIVED_DATA_PATH:-}" ]]; then
-    build_cmd+=( -derivedDataPath "$CI_DERIVED_DATA_PATH" )
-  fi
+  echo "[ci_pre_xcodebuild] Prebuilding pod targets into archive build dir..."
+  echo "[ci_pre_xcodebuild]   scheme=$scheme configuration=$configuration sdk=$sdk"
+  echo "[ci_pre_xcodebuild]   BUILD_DIR=$build_dir"
 
-  build_cmd+=( build )
-  if ! "${build_cmd[@]}"; then
-    echo "[ci_pre_xcodebuild] WARNING: Pods prebuild failed; continuing with main build."
-  fi
+  local target
+  for target in "${targets[@]}"; do
+    echo "[ci_pre_xcodebuild] Building pod target: $target"
+    xcodebuild \
+      -project "$pods_project" \
+      -target "$target" \
+      -configuration "$configuration" \
+      -sdk "$sdk" \
+      BUILD_DIR="$build_dir" \
+      OBJROOT="$obj_root" \
+      SYMROOT="$build_dir" \
+      build || {
+        echo "[ci_pre_xcodebuild] ERROR: Failed to build pod target '$target'."
+        exit 1
+      }
+  done
 }
 
 # Use CI_PRIMARY_REPOSITORY_PATH (the actual repo root in Xcode Cloud),

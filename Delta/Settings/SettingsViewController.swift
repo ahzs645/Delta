@@ -159,6 +159,13 @@ class SettingsViewController: UITableViewController
     override func viewDidLoad()
     {
         super.viewDidLoad()
+
+        if #available(iOS 26, *)
+        {
+            // Avoid oversized/empty header area when Settings is shown as a modal sheet.
+            self.navigationItem.largeTitleDisplayMode = .never
+            self.navigationController?.navigationBar.prefersLargeTitles = false
+        }
         
         if let version = Bundle.main.object(forInfoDictionaryKey: "DLTAVersion") as? String
         {
