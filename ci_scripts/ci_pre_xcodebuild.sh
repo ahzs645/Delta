@@ -106,14 +106,30 @@ prebuild_pods_target() {
     return 0
   fi
 
-  local scheme="${CI_XCODE_SCHEME:-Delta}"
+  local scheme="${CI_XCODE_SCHEME:-}"
+  if [[ -z "$scheme" ]]; then
+    if [[ -f "$repo_root/Delta.xcworkspace/xcshareddata/xcschemes/Delta-Cloud.xcscheme" ]]; then
+      scheme="Delta-Cloud"
+    else
+      scheme="Delta"
+    fi
+  fi
   local configuration="${CONFIGURATION:-Release}"
   local sdk="${SDKROOT:-${SDK_NAME:-iphoneos}}"
   if [[ "$sdk" == */* ]]; then
     sdk="${SDK_NAME:-iphoneos}"
   fi
 
-  local derived_data_root="${CI_DERIVED_DATA_PATH:-$repo_root/DerivedData}"
+  local derived_data_root="${CI_DERIVED_DATA_PATH:-}"
+  if [[ -z "$derived_data_root" ]]; then
+    if [[ -d "/Volumes/workspace/DerivedData" ]]; then
+      derived_data_root="/Volumes/workspace/DerivedData"
+    elif [[ -n "${CI_WORKSPACE:-}" && -d "${CI_WORKSPACE}/DerivedData" ]]; then
+      derived_data_root="${CI_WORKSPACE}/DerivedData"
+    else
+      derived_data_root="$repo_root/DerivedData"
+    fi
+  fi
   local archive_root="$derived_data_root/Build/Intermediates.noindex/ArchiveIntermediates/$scheme"
   local build_dir="$archive_root/BuildProductsPath"
   local obj_root="$archive_root/IntermediateBuildFilesPath"
@@ -127,6 +143,9 @@ prebuild_pods_target() {
 
   echo "[ci_pre_xcodebuild] Prebuilding pod targets into archive build dir..."
   echo "[ci_pre_xcodebuild]   scheme=$scheme configuration=$configuration sdk=$sdk"
+  echo "[ci_pre_xcodebuild]   CI_DERIVED_DATA_PATH=${CI_DERIVED_DATA_PATH:-<unset>}"
+  echo "[ci_pre_xcodebuild]   CI_WORKSPACE=${CI_WORKSPACE:-<unset>}"
+  echo "[ci_pre_xcodebuild]   derived_data_root=$derived_data_root"
   echo "[ci_pre_xcodebuild]   BUILD_DIR=$build_dir"
 
   local target
@@ -145,6 +164,42 @@ prebuild_pods_target() {
         exit 1
       }
   done
+
+  # Verify expected Swift pod modules were produced at the same build-products
+  # location used by Archive.
+  local effective_platform="-iphoneos"
+  case "$sdk" in
+    *simulator*) effective_platform="-iphonesimulator" ;;
+    appletvos*) effective_platform="-appletvos" ;;
+    appletvsimulator*) effective_platform="-appletvsimulator" ;;
+    watchos*) effective_platform="-watchos" ;;
+    watchsimulator*) effective_platform="-watchsimulator" ;;
+    macosx*) effective_platform="" ;;
+  esac
+
+  local products_config_dir="$build_dir/${configuration}${effective_platform}"
+
+  if [[ "$scheme" != "DeltaPreviews" ]]; then
+    local harmony_dir="$products_config_dir/Harmony"
+    local sqlite_dir="$products_config_dir/SQLite.swift"
+    local harmony_module_dir="$harmony_dir/Harmony.swiftmodule"
+    local sqlite_module_dir="$sqlite_dir/SQLite.swiftmodule"
+
+    echo "[ci_pre_xcodebuild] Verifying pod module outputs..."
+    echo "[ci_pre_xcodebuild]   products_config_dir=$products_config_dir"
+
+    if [[ ! -d "$harmony_module_dir" || -z "$(find "$harmony_module_dir" -name '*.swiftmodule' -print -quit 2>/dev/null)" ]]; then
+      echo "[ci_pre_xcodebuild] ERROR: Harmony Swift module output missing at $harmony_module_dir"
+      ls -la "$harmony_dir" 2>/dev/null || true
+      exit 1
+    fi
+
+    if [[ ! -d "$sqlite_module_dir" || -z "$(find "$sqlite_module_dir" -name '*.swiftmodule' -print -quit 2>/dev/null)" ]]; then
+      echo "[ci_pre_xcodebuild] ERROR: SQLite.swift module output missing at $sqlite_module_dir"
+      ls -la "$sqlite_dir" 2>/dev/null || true
+      exit 1
+    fi
+  fi
 }
 
 # Use CI_PRIMARY_REPOSITORY_PATH (the actual repo root in Xcode Cloud),
