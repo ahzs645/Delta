@@ -3,6 +3,10 @@ set -euo pipefail
 
 echo "[ci_pre_xcodebuild] Applying Xcode Cloud dependency workarounds..."
 
+# Xcode 16+ explicit Swift modules can incorrectly resolve CocoaPods Clang modules
+# (e.g. Harmony/SQLite) without their Swift APIs in CI archive builds.
+export SWIFT_ENABLE_EXPLICIT_MODULES=NO
+
 patch_rcheevos_package() {
   local package_file="$1"
 

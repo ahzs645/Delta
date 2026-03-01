@@ -2718,6 +2718,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.rileytestut.Delta;
 				PRODUCT_NAME = Delta;
 				SDKROOT = iphoneos;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
@@ -2774,6 +2775,7 @@
 				PRODUCT_NAME = Delta;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				VALIDATE_PRODUCT = YES;
 			};
@@ -2846,6 +2848,7 @@
 				STRIP_INSTALLED_PRODUCT = YES;
 				STRIP_STYLE = "non-global";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = BETA;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
 				SWIFT_INCLUDE_PATHS = "$(inherited) \"$(SRCROOT)/Cores/GPGXDeltaCore/Sources/GPGXBridge\"";
 				SWIFT_OBJC_BRIDGING_HEADER = "Delta/Supporting Files/Delta-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -2883,6 +2886,7 @@
 				STRIP_INSTALLED_PRODUCT = YES;
 				STRIP_STYLE = "non-global";
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
 				SWIFT_INCLUDE_PATHS = "$(inherited) \"$(SRCROOT)/Cores/GPGXDeltaCore/Sources/GPGXBridge\"";
 				SWIFT_OBJC_BRIDGING_HEADER = "Delta/Supporting Files/Delta-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
