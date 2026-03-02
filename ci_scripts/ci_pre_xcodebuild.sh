@@ -2,6 +2,7 @@
 set -euo pipefail
 
 echo "[ci_pre_xcodebuild] Applying Xcode Cloud dependency workarounds..."
+bundler_version="4.0.7"
 
 # Xcode 16+ explicit Swift modules can incorrectly resolve CocoaPods Clang modules
 # (e.g. Harmony/SQLite) without their Swift APIs in CI archive builds.
@@ -98,25 +99,40 @@ ensure_pods_installed() {
     is_ci=1
   fi
 
-  if ! command -v pod &>/dev/null; then
+  local use_bundle_exec=0
+  if command -v bundle &>/dev/null && [[ -f "$repo_root/Gemfile" ]]; then
+    use_bundle_exec=1
+  fi
+
+  if [[ $use_bundle_exec -eq 0 ]] && ! command -v pod &>/dev/null; then
     if [[ $is_ci -eq 1 ]]; then
-      echo "[ci_pre_xcodebuild] ERROR: CocoaPods is required but 'pod' is unavailable in PATH."
+      echo "[ci_pre_xcodebuild] ERROR: CocoaPods is required but neither 'bundle' nor 'pod' is available."
       echo "[ci_pre_xcodebuild] ERROR: Missing pod install can cause Harmony/SQLite symbol resolution failures."
       exit 1
     fi
 
-    echo "[ci_pre_xcodebuild] WARNING: 'pod' is unavailable; skipping pod install for local build."
+    echo "[ci_pre_xcodebuild] WARNING: Neither 'bundle' nor 'pod' is available; skipping pod install for local build."
     echo "[ci_pre_xcodebuild] WARNING: If build fails with missing pods, run pod install manually."
     return 0
   fi
 
   echo "[ci_pre_xcodebuild] Installing/updating CocoaPods dependencies..."
-  if ! (
-    cd "$repo_root"
-    # Avoid inheriting Bundler-specific environment when running under Xcode.
-    # Some local Ruby setups only have a different Bundler version than Gemfile.lock.
-    env -u BUNDLE_GEMFILE -u BUNDLE_PATH -u BUNDLE_BIN_PATH -u BUNDLE_WITHOUT -u RUBYGEMS_GEMDEPS -u RUBYOPT pod install
-  ); then
+  local pod_install_status=0
+  if [[ $use_bundle_exec -eq 1 ]]; then
+    (
+      cd "$repo_root"
+      bundle "_${bundler_version}_" exec pod install
+    ) || pod_install_status=$?
+  else
+    (
+      cd "$repo_root"
+      # Avoid inheriting Bundler-specific environment when running under Xcode.
+      # Some local Ruby setups only have a different Bundler version than Gemfile.lock.
+      env -u BUNDLE_GEMFILE -u BUNDLE_PATH -u BUNDLE_BIN_PATH -u BUNDLE_WITHOUT -u RUBYGEMS_GEMDEPS -u RUBYOPT pod install
+    ) || pod_install_status=$?
+  fi
+
+  if [[ $pod_install_status -ne 0 ]]; then
     if [[ $is_ci -eq 1 ]]; then
       echo "[ci_pre_xcodebuild] ERROR: pod install failed in CI environment."
       exit 1

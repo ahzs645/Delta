@@ -94,21 +94,25 @@ class CheatBase: GamesDatabase
     
     func cheats(for game: Game) async throws -> [CheatMetadata]?
     {
-        let metadata: GameMetadata?
+        let gameHash: String
         if let context = game.managedObjectContext
         {
-            var contextMetadata: GameMetadata?
-            context.performAndWait {
-                contextMetadata = self.metadata(for: game)
+            let gameObjectID = game.objectID
+            gameHash = context.performAndWait {
+                guard let contextGame = try? context.existingObject(with: gameObjectID) as? Game else { return "" }
+                return contextGame.identifier.uppercased()
             }
-            metadata = contextMetadata
         }
         else
         {
-            metadata = self.metadata(for: game)
+            gameHash = game.identifier.uppercased()
         }
-        
-        guard let romIDValue = metadata?.romID else { return nil }
+
+        let romID = Expression<Any>.romID
+        let sha1Hash = Expression<Any>.sha1Hash
+        let metadataQuery = Table.roms.select(romID).filter(sha1Hash == gameHash)
+        guard let metadataRow = try self.connection.pluck(metadataQuery) else { return nil }
+        let romIDValue = metadataRow[romID]
         
         let cheatID = Expression<Any>.cheatID
         let cheatName = Expression<Any>.cheatName
@@ -120,8 +124,6 @@ class CheatBase: GamesDatabase
         let categoryID = Expression<Any>.cheatCategoryID
         let categoryName = Expression<Any>.cheatCategoryName
         let categoryDescription = Expression<Any>.cheatCategoryDescription
-        
-        let romID = Expression<Any>.romID
         
         let query = Table.cheats.select(cheatID, cheatName, cheatCode, cheatDescription, cheatActivation, cheatDeviceID, Table.cheats[categoryID], categoryName, categoryDescription)
             .filter(romID == romIDValue)
