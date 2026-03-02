@@ -10,7 +10,7 @@
             ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
             <ActionContent
                title = "Run Script"
-               scriptText = "# Type a script or drag a script file from your workspace to insert its path.&#10;set -euo pipefail&#10;&#10;echo &quot;CI pre-build bootstrap&#x2026;&quot;&#10;&#10;# IMPORTANT: pre-actions may run from a temp directory.&#10;# SRCROOT is the reliable anchor for the checked-out repo.&#10;cd &quot;${SRCROOT}&quot;&#10;&#10;# Ensure submodules (if you use them)&#10;git submodule update --init --recursive || true&#10;&#10;# CocoaPods (pick ONE style that matches your repo)&#10;if [ -f &quot;Gemfile&quot; ]; then&#10;  bundle install&#10;  bundle exec pod install&#10;else&#10;  pod install&#10;fi&#10;">
+               scriptText = "# Type a script or drag a script file from your workspace to insert its path.&#10;set -euo pipefail&#10;&#10;echo &quot;CI pre-build bootstrap&#x2026;&quot;&#10;echo &quot;CI pre-build bootstrap v2 (scheme script)&quot;&#10;cd &quot;${SRCROOT}&quot;&#10;&#10;if [ ! -f &quot;${SRCROOT}/ci_scripts/ci_pre_xcodebuild.sh&quot; ]; then&#10;  echo &quot;ERROR: Missing ${SRCROOT}/ci_scripts/ci_pre_xcodebuild.sh&quot;&#10;  exit 1&#10;fi&#10;&#10;if [ -x &quot;${SRCROOT}/ci_scripts/ci_pre_xcodebuild.sh&quot; ]; then&#10;  &quot;${SRCROOT}/ci_scripts/ci_pre_xcodebuild.sh&quot;&#10;else&#10;  bash &quot;${SRCROOT}/ci_scripts/ci_pre_xcodebuild.sh&quot;&#10;fi&#10;">
                <EnvironmentBuildable>
                   <BuildableReference
                      BuildableIdentifier = "primary"

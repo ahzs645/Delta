@@ -86,17 +86,51 @@ ensure_pods_installed() {
     return 0
   fi
 
+  local podfile_lock="$repo_root/Podfile.lock"
+  local manifest_lock="$repo_root/Pods/Manifest.lock"
+  if [[ -f "$podfile_lock" && -f "$manifest_lock" ]] && cmp -s "$podfile_lock" "$manifest_lock"; then
+    echo "[ci_pre_xcodebuild] CocoaPods already up to date. Skipping pod install."
+    return 0
+  fi
+
+  local is_ci=0
+  if [[ -n "${CI:-}" || -n "${CI_WORKSPACE:-}" || -n "${CI_XCODE_CLOUD:-}" ]]; then
+    is_ci=1
+  fi
+
   if ! command -v pod &>/dev/null; then
-    echo "[ci_pre_xcodebuild] ERROR: CocoaPods is required but 'pod' is unavailable in PATH."
-    echo "[ci_pre_xcodebuild] ERROR: Missing pod install can cause Harmony/SQLite symbol resolution failures."
-    exit 1
+    if [[ $is_ci -eq 1 ]]; then
+      echo "[ci_pre_xcodebuild] ERROR: CocoaPods is required but 'pod' is unavailable in PATH."
+      echo "[ci_pre_xcodebuild] ERROR: Missing pod install can cause Harmony/SQLite symbol resolution failures."
+      exit 1
+    fi
+
+    echo "[ci_pre_xcodebuild] WARNING: 'pod' is unavailable; skipping pod install for local build."
+    echo "[ci_pre_xcodebuild] WARNING: If build fails with missing pods, run pod install manually."
+    return 0
   fi
 
   echo "[ci_pre_xcodebuild] Installing/updating CocoaPods dependencies..."
-  (
+  if ! (
     cd "$repo_root"
-    pod install
-  )
+    # Avoid inheriting Bundler-specific environment when running under Xcode.
+    # Some local Ruby setups only have a different Bundler version than Gemfile.lock.
+    env -u BUNDLE_GEMFILE -u BUNDLE_PATH -u BUNDLE_BIN_PATH -u BUNDLE_WITHOUT -u RUBYGEMS_GEMDEPS -u RUBYOPT pod install
+  ); then
+    if [[ $is_ci -eq 1 ]]; then
+      echo "[ci_pre_xcodebuild] ERROR: pod install failed in CI environment."
+      exit 1
+    fi
+
+    if [[ -d "$repo_root/Pods" && -f "$manifest_lock" ]]; then
+      echo "[ci_pre_xcodebuild] WARNING: pod install failed, but existing Pods checkout was detected."
+      echo "[ci_pre_xcodebuild] WARNING: Continuing local build. Fix CocoaPods/Bundler locally to silence this."
+      return 0
+    fi
+
+    echo "[ci_pre_xcodebuild] ERROR: pod install failed and no usable Pods checkout was found."
+    exit 1
+  fi
 }
 
 prebuild_pods_target() {
