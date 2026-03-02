@@ -2218,7 +2218,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/opt/homebrew/bin/mogenerator -m \"Delta/Database/Model/Delta.xcdatamodeld\" --human-dir \"Delta/Database/Model/Human\" --machine-dir \"Delta/Database/Model/Machine\" --swift --template-var scalarsWhenNonOptional=true --template-path \"Delta/Database/Model/mogenerator/templates\"\n";
+				shellScript = "MOGEN=$(command -v mogenerator || true)\nif [ -z \"$MOGEN\" ]; then\n  echo \"error: mogenerator not found in PATH. Install mogenerator or regenerate Core Data models.\" >&2\n  exit 127\nfi\n\"$MOGEN\" -m \"Delta/Database/Model/Delta.xcdatamodeld\" --human-dir \"Delta/Database/Model/Human\" --machine-dir \"Delta/Database/Model/Machine\" --swift --template-var scalarsWhenNonOptional=true --template-path \"Delta/Database/Model/mogenerator/templates\"\n";
 		};
 		BF6E70BD25D2187F00E41CD1 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
