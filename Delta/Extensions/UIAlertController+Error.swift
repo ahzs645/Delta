@@ -8,7 +8,6 @@
 
 import Foundation
 import Roxas
-import Harmony
 
 extension UIAlertController
 {
@@ -16,7 +15,7 @@ extension UIAlertController
     {
         let message: String
         
-        if let error = error as? HarmonyError, let reason = error.failureReason
+        if let error = error as NSError?, let reason = error.localizedFailureReason
         {
             message = reason
         }

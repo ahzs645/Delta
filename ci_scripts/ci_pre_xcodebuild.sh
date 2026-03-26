@@ -149,6 +149,42 @@ ensure_pods_installed() {
   fi
 }
 
+stage_pod_module_artifacts() {
+  local products_config_dir="$1"
+  local public_headers_root="$repo_root/Pods/Headers/Public"
+
+  if [[ ! -d "$public_headers_root" ]]; then
+    return 0
+  fi
+
+  echo "[ci_pre_xcodebuild] Pre-staging pod module maps and public headers..."
+
+  while IFS= read -r -d '' modulemap_path; do
+    local source_dir
+    local module_name
+    local target_dir
+    local companion_dir
+
+    source_dir="$(dirname "$modulemap_path")"
+    module_name="$(basename "$modulemap_path" .modulemap)"
+    target_dir="$products_config_dir/$module_name"
+
+    mkdir -p "$target_dir"
+
+    # Copy the concrete files behind CocoaPods' symlinked public headers so
+    # archive builds can resolve module maps before the producing pod target's
+    # own copy phases have run.
+    cp -RL "$source_dir"/. "$target_dir"/
+
+    companion_dir="$public_headers_root/$module_name"
+    if [[ -d "$companion_dir" && "$companion_dir" != "$source_dir" ]]; then
+      cp -RL "$companion_dir"/. "$target_dir"/
+    fi
+
+    echo "[ci_pre_xcodebuild]   staged $module_name into $target_dir"
+  done < <(find "$public_headers_root" -mindepth 2 -maxdepth 2 -name '*.modulemap' -print0 2>/dev/null)
+}
+
 prebuild_pods_target() {
   local pods_project="$repo_root/Pods/Pods.xcodeproj"
   if [[ ! -d "$pods_project" ]]; then
@@ -170,19 +206,43 @@ prebuild_pods_target() {
     sdk="${SDK_NAME:-iphoneos}"
   fi
 
-  local derived_data_root="${CI_DERIVED_DATA_PATH:-}"
-  if [[ -z "$derived_data_root" ]]; then
-    if [[ -d "/Volumes/workspace/DerivedData" ]]; then
-      derived_data_root="/Volumes/workspace/DerivedData"
-    elif [[ -n "${CI_WORKSPACE:-}" && -d "${CI_WORKSPACE}/DerivedData" ]]; then
-      derived_data_root="${CI_WORKSPACE}/DerivedData"
-    else
-      derived_data_root="$repo_root/DerivedData"
+  local archive_suffix="/Build/Intermediates.noindex/ArchiveIntermediates/$scheme"
+  local derived_data_root
+  local archive_root
+  local build_dir
+  local obj_root
+
+  if [[ -n "${BUILD_DIR:-}" && "$BUILD_DIR" == *"${archive_suffix}/BuildProductsPath" ]]; then
+    build_dir="${BUILD_DIR}"
+    archive_root="${build_dir%/BuildProductsPath}"
+    derived_data_root="${archive_root%$archive_suffix}"
+    obj_root="${OBJROOT:-$archive_root/IntermediateBuildFilesPath}"
+  else
+    derived_data_root="${CI_DERIVED_DATA_PATH:-}"
+    if [[ -z "$derived_data_root" ]]; then
+      if [[ -d "/Volumes/workspace/DerivedData" ]]; then
+        derived_data_root="/Volumes/workspace/DerivedData"
+      elif [[ -n "${CI_WORKSPACE:-}" && -d "${CI_WORKSPACE}/DerivedData" ]]; then
+        derived_data_root="${CI_WORKSPACE}/DerivedData"
+      else
+        derived_data_root="$repo_root/DerivedData"
+      fi
     fi
+
+    archive_root="$derived_data_root$archive_suffix"
+    build_dir="$archive_root/BuildProductsPath"
+    obj_root="$archive_root/IntermediateBuildFilesPath"
   fi
-  local archive_root="$derived_data_root/Build/Intermediates.noindex/ArchiveIntermediates/$scheme"
-  local build_dir="$archive_root/BuildProductsPath"
-  local obj_root="$archive_root/IntermediateBuildFilesPath"
+  local effective_platform="-iphoneos"
+  case "$sdk" in
+    *simulator*) effective_platform="-iphonesimulator" ;;
+    appletvos*) effective_platform="-appletvos" ;;
+    appletvsimulator*) effective_platform="-appletvsimulator" ;;
+    watchos*) effective_platform="-watchos" ;;
+    watchsimulator*) effective_platform="-watchsimulator" ;;
+    macosx*) effective_platform="" ;;
+  esac
+  local products_config_dir="$build_dir/${configuration}${effective_platform}"
 
   local -a targets=()
   if [[ "$scheme" == "DeltaPreviews" ]]; then
@@ -198,10 +258,42 @@ prebuild_pods_target() {
   echo "[ci_pre_xcodebuild]   derived_data_root=$derived_data_root"
   echo "[ci_pre_xcodebuild]   BUILD_DIR=$build_dir"
 
+  stage_pod_module_artifacts "$products_config_dir"
+
   local target
   for target in "${targets[@]}"; do
     echo "[ci_pre_xcodebuild] Building pod target: $target"
-    xcodebuild \
+    env \
+      -u BUILD_DIR \
+      -u BUILD_ROOT \
+      -u BUILT_PRODUCTS_DIR \
+      -u CONFIGURATION_BUILD_DIR \
+      -u CONFIGURATION_TEMP_DIR \
+      -u DERIVED_FILE_DIR \
+      -u DERIVED_FILES_DIR \
+      -u DERIVED_SOURCES_DIR \
+      -u FRAMEWORK_SEARCH_PATHS \
+      -u HEADER_SEARCH_PATHS \
+      -u LIBRARY_SEARCH_PATHS \
+      -u MODULEMAP_FILE \
+      -u OBJROOT \
+      -u OTHER_CFLAGS \
+      -u OTHER_CPLUSPLUSFLAGS \
+      -u OTHER_LDFLAGS \
+      -u OTHER_MODULE_VERIFIER_FLAGS \
+      -u OTHER_SWIFT_FLAGS \
+      -u PODS_BUILD_DIR \
+      -u PODS_CONFIGURATION_BUILD_DIR \
+      -u PODS_PODFILE_DIR_PATH \
+      -u PODS_ROOT \
+      -u PODS_TARGET_SRCROOT \
+      -u PODS_XCFRAMEWORKS_BUILD_DIR \
+      -u SRCROOT \
+      -u SWIFT_INCLUDE_PATHS \
+      -u SYMROOT \
+      -u TARGET_BUILD_DIR \
+      -u XCODE_DEVELOPER_DIR_PATH \
+      xcodebuild \
       -project "$pods_project" \
       -target "$target" \
       -configuration "$configuration" \
@@ -217,18 +309,6 @@ prebuild_pods_target() {
 
   # Verify expected Swift pod modules were produced at the same build-products
   # location used by Archive.
-  local effective_platform="-iphoneos"
-  case "$sdk" in
-    *simulator*) effective_platform="-iphonesimulator" ;;
-    appletvos*) effective_platform="-appletvos" ;;
-    appletvsimulator*) effective_platform="-appletvsimulator" ;;
-    watchos*) effective_platform="-watchos" ;;
-    watchsimulator*) effective_platform="-watchsimulator" ;;
-    macosx*) effective_platform="" ;;
-  esac
-
-  local products_config_dir="$build_dir/${configuration}${effective_platform}"
-
   if [[ "$scheme" != "DeltaPreviews" ]]; then
     local harmony_dir="$products_config_dir/Harmony"
     local sqlite_dir="$products_config_dir/SQLite.swift"

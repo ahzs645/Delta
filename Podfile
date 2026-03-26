@@ -27,6 +27,15 @@ post_install do |installer|
         end
     end
 
+    # SwiftyDropbox's Objective-C implementation must import its public header
+    # through the generated module when modular headers are enabled.
+    swiftydropbox_impl = File.join(installer.sandbox.root.to_s, 'SwiftyDropbox', 'Source', 'SwiftyDropbox', 'Shared', 'Handwritten', 'DBChunkInputStream.m')
+    if File.exist?(swiftydropbox_impl)
+        content = File.read(swiftydropbox_impl)
+        updated = content.gsub('#import "DBChunkInputStream.h"', '#import <SwiftyDropbox/DBChunkInputStream.h>')
+        File.write(swiftydropbox_impl, updated) if updated != content
+    end
+
     # Fix module map paths so Xcode's dependency scanner can find them before
     # pod targets are built.  CocoaPods places module maps at
     # PODS_CONFIGURATION_BUILD_DIR (the build-products dir), but the scanner
