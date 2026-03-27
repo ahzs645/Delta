@@ -7,7 +7,7 @@
 //
 
 import Foundation
-import MultipeerConnectivity
+import Network
 import DeltaCore
 import MelonDSDeltaCore
 
@@ -145,32 +145,51 @@ final class MelonDSLocalMultiplayerManager: NSObject
         let connectingPeers: [String]
         let invitedPeers: [String]
         let isTransportActive: Bool
+        let outboundReliablePacketCount: Int
+        let outboundUnreliablePacketCount: Int
+        let outboundSendFailureCount: Int
+        let inboundForwardedPacketCount: Int
+        let inboundInvalidPacketCount: Int
+        let inboundHashMismatchCount: Int
+        let disconnectEventCount: Int
     }
     
-    private static let discoveryGameHashKey = "g"
     private static let peerIdentifierDefaultsKey = "melondsLocalMultiplayerPeerDisplayName"
-    private static let serviceType = "deltamelonds"
+    private static let bonjourServiceType = "_deltamelonds._tcp"
     
-    private let peerID: MCPeerID
+    private let localPeerName: String
     private let queue = DispatchQueue(label: "com.rileytestut.Delta.MelonDS.LocalMultiplayer")
     
     private weak var bridge: MelonDSEmulatorBridge?
     private var gameHash: UInt64?
     
-    private var session: MCSession?
-    private var advertiser: MCNearbyServiceAdvertiser?
-    private var browser: MCNearbyServiceBrowser?
+    private var listener: NWListener?
+    private var browser: NWBrowser?
+    private var discoveryRetryTimer: DispatchSourceTimer?
     private var packetObserver: NSObjectProtocol?
+    private var sessionLifecycleObservers = [NSObjectProtocol]()
+    
+    private var discoveredPeerEndpoints = [String: NWEndpoint]()
+    private var activeConnections = [UUID: LANPeerConnection]()
+    private var peerConnections = [String: LANPeerConnection]()
     
     private var invitedPeers = Set<String>()
     private var connectingPeers = Set<String>()
     private var connectedPeers = Set<String>()
     private var localSenderID: UInt32?
     private var remoteSenderIDs = [String: UInt32]()
+    private var requiresSessionBootstrap = false
+    private var outboundReliablePacketCount = 0
+    private var outboundUnreliablePacketCount = 0
+    private var outboundSendFailureCount = 0
+    private var inboundForwardedPacketCount = 0
+    private var inboundInvalidPacketCount = 0
+    private var inboundHashMismatchCount = 0
+    private var disconnectEventCount = 0
     
     override private init()
     {
-        self.peerID = Self.makePeerID()
+        self.localPeerName = Self.makePeerName()
         super.init()
     }
     
@@ -187,7 +206,8 @@ final class MelonDSLocalMultiplayerManager: NSObject
             if let activeBridge = self.bridge,
                activeBridge === bridge,
                self.gameHash == gameHash,
-               self.session != nil
+               self.listener != nil,
+               self.browser != nil
             {
                 return
             }
@@ -196,27 +216,29 @@ final class MelonDSLocalMultiplayerManager: NSObject
             
             self.bridge = bridge
             self.gameHash = gameHash
-            Logger.main.info("LocalMP start peer=\(self.peerID.displayName, privacy: .public) hash=\(gameHash.map(Self.hexString(for:)) ?? "wildcard", privacy: .public)")
+            self.resetTrafficDiagnostics()
+            Logger.main.info("LocalMP start peer=\(self.localPeerName, privacy: .public) hash=\(gameHash.map(Self.hexString(for:)) ?? "wildcard", privacy: .public)")
+            self.recordDiagnosticEvent("start peer=\(self.localPeerName) hash=\(gameHash.map(Self.hexString(for:)) ?? "wildcard")")
             
-            let session = MCSession(peer: self.peerID, securityIdentity: nil, encryptionPreference: .none)
-            session.delegate = self
-            self.session = session
-            
-            let discoveryInfo = gameHash.map { [Self.discoveryGameHashKey: Self.hexString(for: $0)] }
-            
-            let advertiser = MCNearbyServiceAdvertiser(peer: self.peerID, discoveryInfo: discoveryInfo, serviceType: Self.serviceType)
-            advertiser.delegate = self
-            advertiser.startAdvertisingPeer()
-            self.advertiser = advertiser
-            
-            let browser = MCNearbyServiceBrowser(peer: self.peerID, serviceType: Self.serviceType)
-            browser.delegate = self
-            browser.startBrowsingForPeers()
-            self.browser = browser
+            self.startListeningLocked(after: 0)
+            self.startBrowsingLocked(after: 0.5)
+            self.startDiscoveryRetryTimerLocked()
             
             self.packetObserver = NotificationCenter.default.addObserver(forName: MelonDSEmulatorBridge.didProduceMultiplayerPacketNotification, object: bridge, queue: nil) { [weak self] notification in
                 self?.handleOutboundPacket(notification)
             }
+            self.sessionLifecycleObservers = [
+                NotificationCenter.default.addObserver(forName: MelonDSEmulatorBridge.didBeginMultiplayerSessionNotification, object: bridge, queue: nil) { [weak self] _ in
+                    self?.queue.async {
+                        self?.resetSessionRoutingStateLocked(reason: "begin")
+                    }
+                },
+                NotificationCenter.default.addObserver(forName: MelonDSEmulatorBridge.didEndMultiplayerSessionNotification, object: bridge, queue: nil) { [weak self] _ in
+                    self?.queue.async {
+                        self?.resetSessionRoutingStateLocked(reason: "end")
+                    }
+                }
+            ]
         }
     }
     
@@ -231,17 +253,24 @@ final class MelonDSLocalMultiplayerManager: NSObject
             self.stopLocked(postDisconnect: true)
         }
     }
-
+    
     func diagnosticsSnapshot() -> DiagnosticsSnapshot
     {
         self.queue.sync {
             DiagnosticsSnapshot(
-                localPeerIdentifier: self.peerID.displayName,
+                localPeerIdentifier: self.localPeerName,
                 gameHash: self.gameHash.map(Self.hexString(for:)),
                 connectedPeers: self.connectedPeers.sorted(),
                 connectingPeers: self.connectingPeers.sorted(),
                 invitedPeers: self.invitedPeers.sorted(),
-                isTransportActive: (self.bridge != nil && self.session != nil)
+                isTransportActive: (self.bridge != nil && self.listener != nil && self.browser != nil),
+                outboundReliablePacketCount: self.outboundReliablePacketCount,
+                outboundUnreliablePacketCount: self.outboundUnreliablePacketCount,
+                outboundSendFailureCount: self.outboundSendFailureCount,
+                inboundForwardedPacketCount: self.inboundForwardedPacketCount,
+                inboundInvalidPacketCount: self.inboundInvalidPacketCount,
+                inboundHashMismatchCount: self.inboundHashMismatchCount,
+                disconnectEventCount: self.disconnectEventCount
             )
         }
     }
@@ -250,29 +279,39 @@ final class MelonDSLocalMultiplayerManager: NSObject
     {
         let activeBridge = self.bridge
         let activeHash = self.gameHash.map(Self.hexString(for:)) ?? "wildcard"
+        let hadConnections = !self.connectedPeers.isEmpty
         
         if let packetObserver = self.packetObserver
         {
             NotificationCenter.default.removeObserver(packetObserver)
             self.packetObserver = nil
         }
+        for observer in self.sessionLifecycleObservers
+        {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        self.sessionLifecycleObservers.removeAll()
         
-        self.browser?.stopBrowsingForPeers()
-        self.browser?.delegate = nil
+        self.discoveryRetryTimer?.cancel()
+        self.discoveryRetryTimer = nil
+        
+        self.browser?.cancel()
         self.browser = nil
         
-        self.advertiser?.stopAdvertisingPeer()
-        self.advertiser?.delegate = nil
-        self.advertiser = nil
+        self.listener?.cancel()
+        self.listener = nil
         
-        self.session?.disconnect()
-        self.session?.delegate = nil
-        self.session = nil
+        let connections = Array(self.activeConnections.values)
+        self.activeConnections.removeAll()
+        self.peerConnections.removeAll()
+        for connection in connections
+        {
+            connection.cancel()
+        }
         
+        self.discoveredPeerEndpoints.removeAll()
         self.invitedPeers.removeAll()
         self.connectingPeers.removeAll()
-        
-        let hadConnections = !self.connectedPeers.isEmpty
         self.connectedPeers.removeAll()
         self.localSenderID = nil
         self.remoteSenderIDs.removeAll()
@@ -281,12 +320,390 @@ final class MelonDSLocalMultiplayerManager: NSObject
         self.gameHash = nil
         self.bridge = nil
         
-        Logger.main.info("LocalMP stop peer=\(self.peerID.displayName, privacy: .public) hash=\(activeHash, privacy: .public)")
+        Logger.main.info("LocalMP stop peer=\(self.localPeerName, privacy: .public) hash=\(activeHash, privacy: .public)")
+        self.recordDiagnosticEvent("stop peer=\(self.localPeerName) hash=\(activeHash)")
         
         if postDisconnect && hadConnections
         {
             self.post(notification: Self.didDisconnectNotification, bridge: activeBridge)
         }
+    }
+    
+    private func startListeningLocked(after delay: TimeInterval)
+    {
+        self.queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.bridge != nil else { return }
+            
+            do
+            {
+                let listener = try NWListener(using: Self.tcpParameters(), on: .any)
+                listener.stateUpdateHandler = { [weak self] state in
+                    self?.queue.async {
+                        self?.handleListenerState(state, listener: listener)
+                    }
+                }
+                listener.newConnectionHandler = { [weak self] connection in
+                    self?.queue.async {
+                        self?.registerConnectionLocked(connection, initiatedLocally: false, expectedPeerName: nil)
+                    }
+                }
+                listener.service = NWListener.Service(name: self.localPeerName, type: Self.bonjourServiceType)
+                
+                self.listener?.cancel()
+                self.listener = listener
+                listener.start(queue: self.queue)
+            }
+            catch
+            {
+                Logger.main.error("LocalMP listener failed. \(error.localizedDescription, privacy: .public)")
+                self.recordDiagnosticEvent("listener create failed error=\(error.localizedDescription)")
+                self.startListeningLocked(after: 1.0)
+            }
+        }
+    }
+    
+    private func startBrowsingLocked(after delay: TimeInterval)
+    {
+        self.queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.bridge != nil else { return }
+            
+            let browser = NWBrowser(for: .bonjour(type: Self.bonjourServiceType, domain: nil), using: Self.tcpParameters())
+            browser.stateUpdateHandler = { [weak self] state in
+                self?.queue.async {
+                    self?.handleBrowserState(state, browser: browser)
+                }
+            }
+            browser.browseResultsChangedHandler = { [weak self] results, _ in
+                self?.queue.async {
+                    self?.handleBrowseResults(results, browser: browser)
+                }
+            }
+            
+            self.browser?.cancel()
+            self.browser = browser
+            browser.start(queue: self.queue)
+        }
+    }
+    
+    private func startDiscoveryRetryTimerLocked()
+    {
+        self.discoveryRetryTimer?.cancel()
+        
+        let timer = DispatchSource.makeTimerSource(queue: self.queue)
+        timer.schedule(deadline: .now() + 5.0, repeating: 5.0)
+        timer.setEventHandler { [weak self] in
+            guard let self,
+                  self.bridge != nil,
+                  self.connectedPeers.isEmpty,
+                  self.connectingPeers.isEmpty,
+                  self.invitedPeers.isEmpty
+            else {
+                return
+            }
+            
+            Logger.main.info("LocalMP restart browser peer=\(self.localPeerName, privacy: .public)")
+            self.startBrowsingLocked(after: 0)
+        }
+        timer.resume()
+        
+        self.discoveryRetryTimer = timer
+    }
+    
+    private func handleListenerState(_ state: NWListener.State, listener: NWListener)
+    {
+        guard self.listener === listener else { return }
+        
+        switch state
+        {
+        case .failed(let error):
+            Logger.main.error("LocalMP listener failed. \(error.localizedDescription, privacy: .public)")
+            self.recordDiagnosticEvent("listener failed error=\(error.localizedDescription)")
+            self.listener?.cancel()
+            self.listener = nil
+            self.startListeningLocked(after: 1.0)
+            
+        default:
+            break
+        }
+    }
+    
+    private func handleBrowserState(_ state: NWBrowser.State, browser: NWBrowser)
+    {
+        guard self.browser === browser else { return }
+        
+        switch state
+        {
+        case .failed(let error):
+            Logger.main.error("LocalMP browse failed. \(error.localizedDescription, privacy: .public)")
+            self.recordDiagnosticEvent("browser failed error=\(error.localizedDescription)")
+            self.browser?.cancel()
+            self.browser = nil
+            self.startBrowsingLocked(after: 1.0)
+            
+        default:
+            break
+        }
+    }
+    
+    private func handleBrowseResults(_ results: Set<NWBrowser.Result>, browser: NWBrowser)
+    {
+        guard self.browser === browser else { return }
+        
+        var discoveredPeerEndpoints = [String: NWEndpoint]()
+        
+        for result in results
+        {
+            guard let peerName = Self.peerName(from: result.endpoint),
+                  peerName != self.localPeerName
+            else {
+                continue
+            }
+            
+            discoveredPeerEndpoints[peerName] = result.endpoint
+            
+            guard self.shouldConnect(to: peerName)
+            else {
+                continue
+            }
+            
+            Logger.main.info("LocalMP found peer=\(peerName, privacy: .public)")
+            self.recordDiagnosticEvent("found peer=\(peerName)")
+            self.connect(to: result.endpoint, peerName: peerName)
+        }
+        
+        self.discoveredPeerEndpoints = discoveredPeerEndpoints
+    }
+    
+    private func shouldConnect(to peerName: String) -> Bool
+    {
+        guard peerName != self.localPeerName else { return false }
+        guard self.peerConnections[peerName] == nil,
+              !self.connectingPeers.contains(peerName),
+              !self.invitedPeers.contains(peerName)
+        else {
+            return false
+        }
+        
+        // Deterministic tie-breaker so only one side initiates a TCP connection.
+        return self.localPeerName < peerName
+    }
+    
+    private func connect(to endpoint: NWEndpoint, peerName: String)
+    {
+        self.invitedPeers.insert(peerName)
+        self.connectingPeers.insert(peerName)
+        Logger.main.info("LocalMP invite peer=\(peerName, privacy: .public)")
+        self.recordDiagnosticEvent("connect start peer=\(peerName)")
+        
+        let connection = NWConnection(to: endpoint, using: Self.tcpParameters())
+        self.registerConnectionLocked(connection, initiatedLocally: true, expectedPeerName: peerName)
+    }
+    
+    private func registerConnectionLocked(_ connection: NWConnection, initiatedLocally: Bool, expectedPeerName: String?)
+    {
+        guard let helloPayload = self.makeHelloPayload() else {
+            connection.cancel()
+            return
+        }
+        
+        self.recordDiagnosticEvent("register connection initiatedLocally=\(initiatedLocally) expectedPeer=\(expectedPeerName ?? "nil")")
+        
+        let peerConnection = LANPeerConnection(connection: connection, initiatedLocally: initiatedLocally, expectedPeerName: expectedPeerName, helloPayload: helloPayload, queue: self.queue)
+        peerConnection.eventHandler = { [weak self] connection, event in
+            self?.queue.async {
+                self?.handleConnectionEvent(event, for: connection)
+            }
+        }
+        peerConnection.frameHandler = { [weak self] connection, kind, payload in
+            self?.queue.async {
+                self?.handleConnectionFrame(kind, payload: payload, from: connection)
+            }
+        }
+        
+        self.activeConnections[peerConnection.id] = peerConnection
+        peerConnection.start()
+    }
+    
+    private func handleConnectionEvent(_ event: LANPeerConnection.Event, for connection: LANPeerConnection)
+    {
+        switch event
+        {
+        case .ready:
+            if let expectedPeerName = connection.expectedPeerName
+            {
+                Logger.main.info("LocalMP session peer=\(expectedPeerName, privacy: .public) state=connecting")
+                self.recordDiagnosticEvent("connection ready expectedPeer=\(expectedPeerName)")
+            }
+            else
+            {
+                self.recordDiagnosticEvent("connection ready incoming")
+            }
+            
+        case .failed(let error):
+            Logger.main.error("LocalMP socket failed. \(error.localizedDescription, privacy: .public)")
+            self.recordDiagnosticEvent("connection failed peer=\(connection.remotePeerName ?? connection.expectedPeerName ?? "nil") error=\(error.localizedDescription)")
+            self.cleanupConnectionLocked(connection, countDisconnect: true)
+            
+        case .cancelled:
+            self.recordDiagnosticEvent("connection cancelled peer=\(connection.remotePeerName ?? connection.expectedPeerName ?? "nil")")
+            self.cleanupConnectionLocked(connection, countDisconnect: true)
+        }
+    }
+    
+    private func handleConnectionFrame(_ kind: TransportFrame.Kind, payload: Data, from connection: LANPeerConnection)
+    {
+        switch kind
+        {
+        case .hello:
+            guard let hello = try? JSONDecoder().decode(TransportHello.self, from: payload),
+                  hello.version == 1
+            else {
+                self.recordDiagnosticEvent("hello decode failed")
+                connection.cancel()
+                return
+            }
+            
+            self.handleHello(hello, from: connection)
+            
+        case .packet:
+            guard let peerName = connection.remotePeerName else {
+                self.inboundInvalidPacketCount += 1
+                connection.cancel()
+                return
+            }
+            
+            self.handleInboundPacket(payload, from: peerName)
+        }
+    }
+    
+    private func handleHello(_ hello: TransportHello, from connection: LANPeerConnection)
+    {
+        let peerName = hello.peerName
+        
+        guard !peerName.isEmpty,
+              peerName != self.localPeerName
+        else {
+            self.recordDiagnosticEvent("reject hello invalid peer=\(peerName)")
+            connection.cancel()
+            return
+        }
+        
+        if let expectedPeerName = connection.expectedPeerName,
+           expectedPeerName != peerName
+        {
+            self.recordDiagnosticEvent("reject hello expected=\(expectedPeerName) actual=\(peerName)")
+            connection.cancel()
+            return
+        }
+        
+        let remoteGameHash = hello.gameHashHex.flatMap { UInt64($0, radix: 16) }
+        guard self.matchesHandshakeGameHash(remoteGameHash) else {
+            Logger.main.info("LocalMP reject peer=\(peerName, privacy: .public) hash=\(hello.gameHashHex ?? "wildcard", privacy: .public)")
+            self.recordDiagnosticEvent("reject hello peer=\(peerName) hash=\(hello.gameHashHex ?? "wildcard")")
+            connection.cancel()
+            return
+        }
+        
+        if let existingConnection = self.peerConnections[peerName],
+           existingConnection !== connection
+        {
+            let preferredConnection = self.preferredConnection(existingConnection, candidate: connection, peerName: peerName)
+            if preferredConnection === existingConnection
+            {
+                self.recordDiagnosticEvent("drop duplicate peer=\(peerName) keep=existing")
+                connection.cancel()
+                return
+            }
+            
+            self.recordDiagnosticEvent("drop duplicate peer=\(peerName) keep=candidate")
+            self.cleanupConnectionLocked(existingConnection, countDisconnect: false)
+        }
+        
+        connection.remotePeerName = peerName
+        
+        self.invitedPeers.remove(peerName)
+        self.connectingPeers.remove(peerName)
+        self.peerConnections[peerName] = connection
+        
+        Logger.main.info("LocalMP session peer=\(peerName, privacy: .public) state=connected")
+        self.recordDiagnosticEvent("connected peer=\(peerName) hash=\(hello.gameHashHex ?? "wildcard")")
+        self.refreshConnectedPeersLocked()
+    }
+    
+    private func preferredConnection(_ existingConnection: LANPeerConnection, candidate: LANPeerConnection, peerName: String) -> LANPeerConnection
+    {
+        let shouldPreferOutboundConnection = (self.localPeerName < peerName)
+        
+        switch (existingConnection.initiatedLocally, candidate.initiatedLocally)
+        {
+        case (true, false):
+            return shouldPreferOutboundConnection ? existingConnection : candidate
+            
+        case (false, true):
+            return shouldPreferOutboundConnection ? candidate : existingConnection
+            
+        default:
+            return existingConnection.id.uuidString <= candidate.id.uuidString ? existingConnection : candidate
+        }
+    }
+    
+    private func cleanupConnectionLocked(_ connection: LANPeerConnection, countDisconnect: Bool)
+    {
+        let removedConnection = (self.activeConnections.removeValue(forKey: connection.id) != nil)
+        
+        var removedConnectedPeer = false
+        if let peerName = connection.remotePeerName
+        {
+            if self.peerConnections[peerName] === connection
+            {
+                removedConnectedPeer = self.connectedPeers.contains(peerName)
+                self.peerConnections.removeValue(forKey: peerName)
+            }
+            
+            self.invitedPeers.remove(peerName)
+            self.connectingPeers.remove(peerName)
+        }
+        else if let expectedPeerName = connection.expectedPeerName
+        {
+            self.invitedPeers.remove(expectedPeerName)
+            self.connectingPeers.remove(expectedPeerName)
+        }
+        
+        if removedConnectedPeer && countDisconnect
+        {
+            self.disconnectEventCount += 1
+        }
+        
+        self.recordDiagnosticEvent("cleanup peer=\(connection.remotePeerName ?? connection.expectedPeerName ?? "nil") removedConnection=\(removedConnection) removedConnectedPeer=\(removedConnectedPeer) countDisconnect=\(countDisconnect)")
+        
+        if removedConnection
+        {
+            connection.cancel()
+        }
+        
+        if removedConnection || removedConnectedPeer
+        {
+            self.refreshConnectedPeersLocked()
+        }
+    }
+    
+    private func matchesHandshakeGameHash(_ remoteGameHash: UInt64?) -> Bool
+    {
+        guard let gameHash = self.gameHash else {
+            return true
+        }
+        
+        guard let remoteGameHash else {
+            return true
+        }
+        
+        return remoteGameHash == gameHash
+    }
+    
+    private func makeHelloPayload() -> Data?
+    {
+        let hello = TransportHello(version: 1, peerName: self.localPeerName, gameHashHex: self.gameHash.map(Self.hexString(for:)))
+        return try? JSONEncoder().encode(hello)
     }
     
     private func handleOutboundPacket(_ notification: Notification)
@@ -295,21 +712,26 @@ final class MelonDSLocalMultiplayerManager: NSObject
             guard let bridge = self.bridge,
                   let emittedBridge = notification.object as? MelonDSEmulatorBridge,
                   emittedBridge === bridge,
-                  let session = self.session,
-                  !session.connectedPeers.isEmpty,
                   let payload = notification.userInfo?["packet"] as? Data,
                   let typeNumber = notification.userInfo?["type"] as? NSNumber,
                   let type = MelonDSMultiplayerPacketType(rawValue: typeNumber.intValue),
-                  let timestampNumber = notification.userInfo?["timestamp"] as? NSNumber,
-                  let aid = {
-                    if let aidNumber = notification.userInfo?["aid"] as? NSNumber
-                    {
-                        return UInt16(truncatingIfNeeded: aidNumber.uint64Value)
-                    }
-                    
-                    return 0
-                  }(),
-                  let senderID = self.senderIDForOutboundPacket(type: type, aid: aid, connectedPeers: session.connectedPeers),
+                  let timestampNumber = notification.userInfo?["timestamp"] as? NSNumber
+            else {
+                return
+            }
+            
+            let aid: UInt16 = {
+                if let aidNumber = notification.userInfo?["aid"] as? NSNumber
+                {
+                    return UInt16(truncatingIfNeeded: aidNumber.uint64Value)
+                }
+                
+                return 0
+            }()
+            
+            let connectedPeerNames = self.connectedPeers.sorted()
+            guard !connectedPeerNames.isEmpty,
+                  let senderID = self.senderIDForOutboundPacket(type: type, aid: aid, connectedPeerNames: connectedPeerNames),
                   let envelope = PacketEnvelope.encode(
                     payload: payload,
                     type: type,
@@ -322,33 +744,79 @@ final class MelonDSLocalMultiplayerManager: NSObject
                 return
             }
             
-            do
+            if self.requiresSessionBootstrap && type != .command
             {
-                try session.send(envelope, toPeers: session.connectedPeers, with: .unreliable)
+                self.recordDiagnosticEvent("drop outbound pre-bootstrap type=\(type.rawValue)")
+                return
             }
-            catch
+            
+            if type == .command
             {
-                Logger.main.error("Failed to send local multiplayer packet. \(error.localizedDescription, privacy: .public)")
+                if self.requiresSessionBootstrap
+                {
+                    self.recordDiagnosticEvent("bootstrap outbound command")
+                }
+                self.requiresSessionBootstrap = false
+            }
+            
+            let connections = connectedPeerNames.compactMap { self.peerConnections[$0] }
+            for connection in connections
+            {
+                connection.sendPacket(envelope) { [weak self, weak connection] error in
+                    guard let self else { return }
+                    
+                    self.queue.async {
+                        guard let connection else { return }
+                        
+                        if let error
+                        {
+                            self.outboundSendFailureCount += 1
+                            Logger.main.error("Failed to send local multiplayer packet. \(error.localizedDescription, privacy: .public)")
+                            self.cleanupConnectionLocked(connection, countDisconnect: true)
+                            return
+                        }
+                        
+                        self.outboundReliablePacketCount += 1
+                    }
+                }
             }
         }
     }
     
-    private func handleInboundPacket(_ data: Data, from peerID: MCPeerID)
+    private func handleInboundPacket(_ data: Data, from peerName: String)
     {
-        guard let envelope = PacketEnvelope.decode(data),
-              self.matchesEnvelopeGameHash(envelope.gameHash)
+        guard let envelope = PacketEnvelope.decode(data)
         else {
+            self.inboundInvalidPacketCount += 1
             return
         }
-
-        self.recordInboundPacketMetadata(envelope, from: peerID.displayName)
+        
+        guard self.matchesEnvelopeGameHash(envelope.gameHash)
+        else {
+            self.inboundHashMismatchCount += 1
+            return
+        }
+        
+        if self.requiresSessionBootstrap
+        {
+            guard envelope.type == .command else {
+                self.recordDiagnosticEvent("drop inbound pre-bootstrap type=\(envelope.type.rawValue) from=\(peerName)")
+                return
+            }
+            
+            self.recordDiagnosticEvent("bootstrap inbound command from=\(peerName)")
+            self.requiresSessionBootstrap = false
+        }
+        
+        self.recordInboundPacketMetadata(envelope, from: peerName)
+        self.inboundForwardedPacketCount += 1
         
         MelonDSEmulatorBridge.enqueueMultiplayerPacket(envelope.payload, type: envelope.type, timestamp: envelope.timestamp, aid: envelope.aid, senderID: envelope.senderID)
     }
     
     private func refreshConnectedPeersLocked()
     {
-        let currentlyConnected = Set(self.session?.connectedPeers.map(\.displayName) ?? [])
+        let currentlyConnected = Set(self.peerConnections.keys)
         let wasConnected = !self.connectedPeers.isEmpty
         let isConnected = !currentlyConnected.isEmpty
         
@@ -378,64 +846,45 @@ final class MelonDSLocalMultiplayerManager: NSObject
         }
     }
     
-    private func makeInvitationContext() -> Data?
+    private func resetTrafficDiagnostics()
     {
-        guard let gameHash = self.gameHash else { return nil }
-        let context = InvitationContext(version: 1, gameHashHex: Self.hexString(for: gameHash))
-        return try? JSONEncoder().encode(context)
+        self.outboundReliablePacketCount = 0
+        self.outboundUnreliablePacketCount = 0
+        self.outboundSendFailureCount = 0
+        self.inboundForwardedPacketCount = 0
+        self.inboundInvalidPacketCount = 0
+        self.inboundHashMismatchCount = 0
+        self.disconnectEventCount = 0
+    }
+
+    private func resetSessionRoutingStateLocked(reason: String)
+    {
+        self.localSenderID = nil
+        self.remoteSenderIDs.removeAll()
+        self.requiresSessionBootstrap = true
+        MelonDSEmulatorBridge.setExpectedRemotePeerCount(UInt16(self.connectedPeers.count))
+        self.recordDiagnosticEvent("session reset reason=\(reason) connectedPeers=\(self.connectedPeers.count)")
     }
     
-    private func matchesInvitationContext(_ contextData: Data?) -> Bool
+    private func recordDiagnosticEvent(_ message: String)
     {
-        guard let gameHash = self.gameHash else {
-            return true
+        let formatter = ISO8601DateFormatter()
+        let line = "\(formatter.string(from: Date())) \(message)\n"
+        
+        guard let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+        let logURL = cachesDirectory.appendingPathComponent("localmp.log")
+        
+        let existingData = (try? Data(contentsOf: logURL)) ?? Data()
+        var updatedData = existingData
+        updatedData.append(line.data(using: .utf8) ?? Data())
+        
+        let maxBytes = 32 * 1024
+        if updatedData.count > maxBytes
+        {
+            updatedData = updatedData.suffix(maxBytes)
         }
         
-        guard let contextData,
-              let context = try? JSONDecoder().decode(InvitationContext.self, from: contextData),
-              context.version == 1,
-              let invitedGameHash = UInt64(context.gameHashHex, radix: 16)
-        else {
-            return false
-        }
-        
-        return invitedGameHash == gameHash
-    }
-    
-    private func shouldInvite(_ peerID: MCPeerID, discoveryInfo: [String : String]?) -> Bool
-    {
-        guard peerID != self.peerID else { return false }
-        guard self.matchesDiscoveryInfo(discoveryInfo) else { return false }
-        guard self.gameHash != nil else { return false }
-        
-        let peerName = peerID.displayName
-        guard !self.connectedPeers.contains(peerName),
-              !self.connectingPeers.contains(peerName),
-              !self.invitedPeers.contains(peerName)
-        else {
-            return false
-        }
-        
-        // Deterministic tie-breaker so only one side initiates invitations.
-        return self.peerID.displayName < peerName
-    }
-    
-    private func matchesDiscoveryInfo(_ discoveryInfo: [String : String]?) -> Bool
-    {
-        guard let gameHash = self.gameHash else {
-            return true
-        }
-        
-        guard let advertisedGameHashString = discoveryInfo?[Self.discoveryGameHashKey] else {
-            return true
-        }
-        
-        guard let advertisedGameHash = UInt64(advertisedGameHashString, radix: 16)
-        else {
-            return false
-        }
-        
-        return advertisedGameHash == gameHash
+        try? updatedData.write(to: logURL, options: .atomic)
     }
     
     private func matchesEnvelopeGameHash(_ envelopeGameHash: UInt64) -> Bool
@@ -447,13 +896,13 @@ final class MelonDSLocalMultiplayerManager: NSObject
         return envelopeGameHash == gameHash || envelopeGameHash == PacketEnvelope.wildcardGameHash
     }
     
-    private func senderIDForOutboundPacket(type: MelonDSMultiplayerPacketType, aid: UInt16, connectedPeers: [MCPeerID]) -> UInt32?
+    private func senderIDForOutboundPacket(type: MelonDSMultiplayerPacketType, aid: UInt16, connectedPeerNames: [String]) -> UInt32?
     {
         switch type
         {
         case .command:
             self.localSenderID = 0
-            self.assignRemoteSenderIDsIfNeeded(for: connectedPeers.map(\.displayName))
+            self.assignRemoteSenderIDsIfNeeded(for: connectedPeerNames)
             return 0
             
         case .reply:
@@ -462,7 +911,7 @@ final class MelonDSLocalMultiplayerManager: NSObject
                 let senderID = UInt32(aid)
                 self.localSenderID = senderID
                 
-                if connectedPeers.count == 1, let peerName = connectedPeers.first?.displayName, self.remoteSenderIDs[peerName] == nil
+                if connectedPeerNames.count == 1, let peerName = connectedPeerNames.first, self.remoteSenderIDs[peerName] == nil
                 {
                     self.remoteSenderIDs[peerName] = 0
                 }
@@ -472,6 +921,7 @@ final class MelonDSLocalMultiplayerManager: NSObject
             
         case .regular, .ack:
             break
+            
         @unknown default:
             break
         }
@@ -488,8 +938,8 @@ final class MelonDSLocalMultiplayerManager: NSObject
             return senderID
         }
         
-        if connectedPeers.count == 1,
-           let peerName = connectedPeers.first?.displayName,
+        if connectedPeerNames.count == 1,
+           let peerName = connectedPeerNames.first,
            let remoteSenderID = self.remoteSenderIDs[peerName],
            remoteSenderID == 0
         {
@@ -559,10 +1009,64 @@ final class MelonDSLocalMultiplayerManager: NSObject
 
 private extension MelonDSLocalMultiplayerManager
 {
-    struct InvitationContext: Codable
+    struct TransportHello: Codable
     {
         var version: Int
-        var gameHashHex: String
+        var peerName: String
+        var gameHashHex: String?
+    }
+    
+    struct TransportFrame
+    {
+        enum Kind: UInt8
+        {
+            case hello = 1
+            case packet = 2
+        }
+        
+        enum DecodeError: Error
+        {
+            case invalidData
+        }
+        
+        private static let magic: UInt32 = 0x4C4D5032 // "LMP2"
+        private static let headerLength = 9
+        
+        static func encode(kind: Kind, payload: Data) -> Data
+        {
+            var data = Data()
+            data.reserveCapacity(Self.headerLength + payload.count)
+            data.appendInteger(Self.magic)
+            data.appendInteger(kind.rawValue)
+            data.appendInteger(UInt32(payload.count))
+            data.append(payload)
+            return data
+        }
+        
+        static func decodeFrames(from buffer: inout Data) throws -> [(Kind, Data)]
+        {
+            var frames = [(Kind, Data)]()
+            
+            while buffer.count >= Self.headerLength
+            {
+                guard let magic = buffer.integer(at: 0, as: UInt32.self), magic == Self.magic,
+                      let rawKind = buffer.integer(at: 4, as: UInt8.self),
+                      let kind = Kind(rawValue: rawKind),
+                      let payloadLength = buffer.integer(at: 5, as: UInt32.self)
+                else {
+                    throw DecodeError.invalidData
+                }
+                
+                let frameLength = Self.headerLength + Int(payloadLength)
+                guard buffer.count >= frameLength else { break }
+                
+                let payload = buffer.subdata(in: Self.headerLength..<frameLength)
+                frames.append((kind, payload))
+                buffer.removeSubrange(0..<frameLength)
+            }
+            
+            return frames
+        }
     }
     
     struct PacketEnvelope
@@ -650,18 +1154,48 @@ private extension MelonDSLocalMultiplayerManager
         }
     }
     
-    static func makePeerID() -> MCPeerID
+    static func makePeerName() -> String
     {
         if let peerDisplayName = UserDefaults.standard.string(forKey: Self.peerIdentifierDefaultsKey)
         {
-            return MCPeerID(displayName: peerDisplayName)
+            return peerDisplayName
         }
         
         let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(8)
         let peerDisplayName = "delta-\(suffix)"
         UserDefaults.standard.set(peerDisplayName, forKey: Self.peerIdentifierDefaultsKey)
         
-        return MCPeerID(displayName: peerDisplayName)
+        return peerDisplayName
+    }
+    
+    static func peerName(from endpoint: NWEndpoint) -> String?
+    {
+        switch endpoint
+        {
+        case let .service(name: name, type: _, domain: _, interface: _):
+            return name
+            
+        default:
+            return nil
+        }
+    }
+    
+    static func tcpParameters() -> NWParameters
+    {
+        let tcpOptions = NWProtocolTCP.Options()
+        tcpOptions.noDelay = true
+        
+        let parameters = NWParameters(tls: nil, tcp: tcpOptions)
+        #if targetEnvironment(simulator)
+        // Simulator AWDL peer-to-peer discovery is unreliable for local testing.
+        // Force standard LAN Bonjour so two booted simulators on the same Mac can
+        // talk over the shared host network instead of the broken AWDL path.
+        parameters.includePeerToPeer = false
+        #else
+        parameters.includePeerToPeer = true
+        #endif
+        parameters.allowLocalEndpointReuse = true
+        return parameters
     }
     
     static func gameHash(for gameURL: URL) -> UInt64?
@@ -691,9 +1225,19 @@ private extension MelonDSLocalMultiplayerManager
     
     static func isHomeScreenGameURL(_ gameURL: URL) -> Bool
     {
-        switch gameURL.lastPathComponent.lowercased()
+        let lastPathComponent = gameURL.lastPathComponent.lowercased()
+        if gameURL.pathExtension.lowercased() == "bios"
         {
-        case "system.bios", "dsi.bios":
+            return true
+        }
+        
+        switch lastPathComponent
+        {
+        case "system.bios",
+             "nds.bios",
+             "dsi.bios",
+             Game.melonDSBIOSIdentifier.lowercased(),
+             Game.melonDSDSiBIOSIdentifier.lowercased():
             return true
             
         default:
@@ -707,106 +1251,129 @@ private extension MelonDSLocalMultiplayerManager
     }
 }
 
-extension MelonDSLocalMultiplayerManager: MCNearbyServiceAdvertiserDelegate
+private final class LANPeerConnection
 {
-    func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void)
+    enum Event
     {
-        self.queue.async {
-            guard self.matchesInvitationContext(context),
-                  let session = self.session
-            else {
-                Logger.main.info("LocalMP reject invite from=\(peerID.displayName, privacy: .public)")
-                invitationHandler(false, nil)
-                return
-            }
-            
-            self.connectingPeers.insert(peerID.displayName)
-            Logger.main.info("LocalMP accept invite from=\(peerID.displayName, privacy: .public)")
-            invitationHandler(true, session)
-        }
+        case ready
+        case failed(Error)
+        case cancelled
     }
-}
-
-extension MelonDSLocalMultiplayerManager: MCNearbyServiceBrowserDelegate
-{
-    func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String : String]?)
+    
+    let id = UUID()
+    let connection: NWConnection
+    let initiatedLocally: Bool
+    let expectedPeerName: String?
+    
+    var remotePeerName: String?
+    
+    private let helloPayload: Data
+    private let queue: DispatchQueue
+    private var receiveBuffer = Data()
+    private var hasSentHello = false
+    
+    var eventHandler: ((LANPeerConnection, Event) -> Void)?
+    var frameHandler: ((LANPeerConnection, MelonDSLocalMultiplayerManager.TransportFrame.Kind, Data) -> Void)?
+    
+    init(connection: NWConnection, initiatedLocally: Bool, expectedPeerName: String?, helloPayload: Data, queue: DispatchQueue)
     {
-        self.queue.async {
-            Logger.main.info("LocalMP found peer=\(peerID.displayName, privacy: .public) advertisedHash=\(info?[Self.discoveryGameHashKey] ?? "wildcard", privacy: .public)")
+        self.connection = connection
+        self.initiatedLocally = initiatedLocally
+        self.expectedPeerName = expectedPeerName
+        self.helloPayload = helloPayload
+        self.queue = queue
+    }
+    
+    func start()
+    {
+        self.connection.stateUpdateHandler = { [weak self] state in
+            self?.handleState(state)
+        }
+        self.connection.start(queue: self.queue)
+    }
+    
+    func cancel()
+    {
+        self.connection.cancel()
+    }
+    
+    func sendPacket(_ payload: Data, completion: @escaping (Error?) -> Void)
+    {
+        self.send(kind: .packet, payload: payload, completion: completion)
+    }
+    
+    private func sendHelloIfNeeded()
+    {
+        guard !self.hasSentHello else { return }
+        
+        self.hasSentHello = true
+        self.send(kind: .hello, payload: self.helloPayload) { _ in }
+    }
+    
+    private func send(kind: MelonDSLocalMultiplayerManager.TransportFrame.Kind, payload: Data, completion: @escaping (Error?) -> Void)
+    {
+        let frame = MelonDSLocalMultiplayerManager.TransportFrame.encode(kind: kind, payload: payload)
+        self.connection.send(content: frame, completion: .contentProcessed { error in
+            completion(error)
+        })
+    }
+    
+    private func handleState(_ state: NWConnection.State)
+    {
+        switch state
+        {
+        case .ready:
+            self.sendHelloIfNeeded()
+            self.receiveNextChunk()
+            self.eventHandler?(self, .ready)
             
-            guard self.shouldInvite(peerID, discoveryInfo: info),
-                  let session = self.session
-            else {
-                return
-            }
+        case .failed(let error):
+            self.eventHandler?(self, .failed(error))
             
-            self.invitedPeers.insert(peerID.displayName)
-            Logger.main.info("LocalMP invite peer=\(peerID.displayName, privacy: .public)")
-            browser.invitePeer(peerID, to: session, withContext: self.makeInvitationContext(), timeout: 10)
+        case .cancelled:
+            self.eventHandler?(self, .cancelled)
+            
+        default:
+            break
         }
     }
     
-    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID)
+    private func receiveNextChunk()
     {
-        self.queue.async {
-            self.invitedPeers.remove(peerID.displayName)
-            self.connectingPeers.remove(peerID.displayName)
-        }
-    }
-}
-
-extension MelonDSLocalMultiplayerManager: MCSessionDelegate
-{
-    func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState)
-    {
-        self.queue.async {
-            let peerName = peerID.displayName
-            let stateDescription: String
+        self.connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
             
-            switch state
+            if let data, !data.isEmpty
             {
-            case .connected:
-                stateDescription = "connected"
-                self.invitedPeers.remove(peerName)
-                self.connectingPeers.remove(peerName)
+                self.receiveBuffer.append(data)
                 
-            case .connecting:
-                stateDescription = "connecting"
-                self.connectingPeers.insert(peerName)
-                
-            case .notConnected:
-                stateDescription = "notConnected"
-                self.invitedPeers.remove(peerName)
-                self.connectingPeers.remove(peerName)
-                
-            @unknown default:
-                stateDescription = "unknown"
-                self.invitedPeers.remove(peerName)
-                self.connectingPeers.remove(peerName)
+                do
+                {
+                    let frames = try MelonDSLocalMultiplayerManager.TransportFrame.decodeFrames(from: &self.receiveBuffer)
+                    for (kind, payload) in frames
+                    {
+                        self.frameHandler?(self, kind, payload)
+                    }
+                }
+                catch
+                {
+                    self.connection.cancel()
+                    return
+                }
             }
             
-            Logger.main.info("LocalMP session peer=\(peerName, privacy: .public) state=\(stateDescription, privacy: .public)")
+            if let error
+            {
+                self.eventHandler?(self, .failed(error))
+                return
+            }
             
-            self.refreshConnectedPeersLocked()
+            guard !isComplete else {
+                self.connection.cancel()
+                return
+            }
+            
+            self.receiveNextChunk()
         }
-    }
-    
-    func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID)
-    {
-        self.queue.async {
-            self.handleInboundPacket(data, from: peerID)
-        }
-    }
-    
-    func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID)
-    {
-    }
-    
-    func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress)
-    {
-    }
-    
-    func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?)
-    {
     }
 }

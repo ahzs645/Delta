@@ -880,6 +880,12 @@ private extension GameCollectionViewController
             NSLocalizedString("Transport Status: Waiting for game launch", comment: "")
         statusLines.append(transportState)
 
+        statusLines.append(String(format: NSLocalizedString("Packets Sent: %d reliable / %d realtime", comment: ""), snapshot.outboundReliablePacketCount, snapshot.outboundUnreliablePacketCount))
+        statusLines.append(String(format: NSLocalizedString("Packets Received: %d", comment: ""), snapshot.inboundForwardedPacketCount))
+
+        let dropSummary = String(format: NSLocalizedString("Transport Issues: %d send failures / %d invalid / %d hash mismatches / %d disconnects", comment: ""), snapshot.outboundSendFailureCount, snapshot.inboundInvalidPacketCount, snapshot.inboundHashMismatchCount, snapshot.disconnectEventCount)
+        statusLines.append(dropSummary)
+
         let instructions = NSLocalizedString("1) Host device: launch your DS game and open local multiplayer.\n2) Joining device: launch Download Play from DS Home Screen.\n3) In Download Play, choose the host session and join.", comment: "")
 
         let message = [
