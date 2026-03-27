@@ -119,6 +119,13 @@ setup_bundler() {
   )
 }
 
+pods_are_up_to_date() {
+  local podfile_lock="$repo_root/Podfile.lock"
+  local manifest_lock="$repo_root/Pods/Manifest.lock"
+
+  [[ -f "$podfile_lock" && -f "$manifest_lock" ]] && cmp -s "$podfile_lock" "$manifest_lock"
+}
+
 rewrite_ssh_urls() {
   local dir="$1"
   # Rewrite any SSH submodule URLs cached in .git/config to HTTPS.
@@ -180,22 +187,26 @@ fi
 
 # Install CocoaPods dependencies.
 if [[ -f "$repo_root/Podfile" ]]; then
-  setup_bundler
-
-  echo "[ci_post_clone] Installing CocoaPods dependencies..."
-  if command -v bundle &>/dev/null && [[ -f "$repo_root/Gemfile" ]]; then
-    (
-      cd "$repo_root"
-      bundle "_${bundler_version}_" exec pod install --repo-update
-    )
-  elif command -v pod &>/dev/null; then
-    (
-      cd "$repo_root"
-      pod install --repo-update
-    )
+  if pods_are_up_to_date; then
+    echo "[ci_post_clone] CocoaPods already up to date. Skipping Bundler and pod install."
   else
-    echo "[ci_post_clone] ERROR: CocoaPods is required but neither 'bundle' nor 'pod' is available."
-    exit 1
+    setup_bundler
+
+    echo "[ci_post_clone] Installing CocoaPods dependencies..."
+    if command -v bundle &>/dev/null && [[ -f "$repo_root/Gemfile" ]]; then
+      (
+        cd "$repo_root"
+        bundle "_${bundler_version}_" exec pod install --repo-update
+      )
+    elif command -v pod &>/dev/null; then
+      (
+        cd "$repo_root"
+        pod install --repo-update
+      )
+    else
+      echo "[ci_post_clone] ERROR: CocoaPods is required but neither 'bundle' nor 'pod' is available."
+      exit 1
+    fi
   fi
 fi
 
