@@ -58,7 +58,7 @@ patch_rcheevos_package() {
     return 0
   fi
 
-  if ! grep -q 'module.modulemap' "$package_file"; then
+  if ! grep -q 'name: "rcheevos"' "$package_file"; then
     return 0
   fi
 
@@ -70,11 +70,68 @@ import re
 import sys
 
 path = pathlib.Path(sys.argv[1])
+checkout_root = path.parent
 text = path.read_text()
 updated = text
 
-updated = re.sub(r',\s*"include/module\.modulemap"', '', updated)
-updated = re.sub(r'"include/module\.modulemap"\s*,\s*', '', updated)
+match = re.search(r'exclude:\s*\[(?P<body>[^\]]*)\]', updated, re.S)
+if match and '"include/module.modulemap"' not in match.group('body'):
+    body = match.group('body').strip()
+    new_body = f'{body}, "include/module.modulemap"' if body else '"include/module.modulemap"'
+    updated = updated[:match.start('body')] + new_body + updated[match.end('body'):]
+
+if updated != text:
+    path.write_text(updated)
+
+umbrella_header = checkout_root / "include" / "rcheevos.h"
+if umbrella_header.exists():
+    header_text = umbrella_header.read_text()
+    include_line = '#include "rc_client_raintegration.h"'
+    if include_line not in header_text:
+        anchor = '#include "rc_consoles.h"'
+        if anchor in header_text:
+            header_text = header_text.replace(anchor, anchor + '\n' + include_line, 1)
+        else:
+            header_text = header_text.replace('#endif /* RCHEEVOS_H */', include_line + '\n\n#endif /* RCHEEVOS_H */', 1)
+        umbrella_header.write_text(header_text)
+PY
+}
+
+patch_n64_bridge_warnings() {
+  local bridge_file="$repo_root/Cores/N64DeltaCore/N64DeltaCore/Bridge/N64EmulatorBridge.m"
+
+  if [[ ! -f "$bridge_file" ]]; then
+    return 0
+  fi
+
+  echo "[ci_pre_xcodebuild] Patching N64 bridge warning site at: $bridge_file"
+
+  python3 - <<'PY' "$bridge_file"
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+updated = text.replace(
+    '''        BOOL didLoadVideoPlugin = [self loadPlugin:@"N64DeltaCore_Video" type:M64PLUGIN_GFX];
+        NSAssert(didLoadVideoPlugin, @"Failed to load video plugin.");
+        
+        BOOL didLoadRSPPlugin = [self loadPlugin:@"N64DeltaCore_RSP" type:M64PLUGIN_RSP];
+        NSAssert(didLoadRSPPlugin, @"Failed to load RSP plugin.");
+''',
+    '''        if (![self loadPlugin:@"N64DeltaCore_Video" type:M64PLUGIN_GFX])
+        {
+            NSAssert(NO, @"Failed to load video plugin.");
+            return;
+        }
+        
+        if (![self loadPlugin:@"N64DeltaCore_RSP" type:M64PLUGIN_RSP])
+        {
+            NSAssert(NO, @"Failed to load RSP plugin.");
+            return;
+        }
+''',
+)
 
 if updated != text:
     path.write_text(updated)
@@ -457,6 +514,8 @@ for search_root in "${search_roots[@]}"; do
     patch_rcheevos_package "$package_file"
   done < <(find "$search_root" -type f -path '*/SourcePackages/checkouts/rcheevos/Package.swift' -print0 2>/dev/null)
 done
+
+patch_n64_bridge_warnings
 
 # --- libslirp-version.h fix ---
 # 1. Try the known path first (most reliable).

@@ -865,6 +865,10 @@ private extension GameCollectionViewController
         {
             statusLines.append(String(format: NSLocalizedString("Session Hash: %@", comment: ""), gameHash))
         }
+        else if snapshot.isTransportActive
+        {
+            statusLines.append(NSLocalizedString("Session Hash: Download Play wildcard", comment: ""))
+        }
 
         if !snapshot.connectedPeers.isEmpty
         {
