@@ -165,6 +165,8 @@ final class MelonDSLocalMultiplayerManager: NSObject
     private var invitedPeers = Set<String>()
     private var connectingPeers = Set<String>()
     private var connectedPeers = Set<String>()
+    private var localSenderID: UInt32?
+    private var remoteSenderIDs = [String: UInt32]()
     
     override private init()
     {
@@ -272,6 +274,9 @@ final class MelonDSLocalMultiplayerManager: NSObject
         
         let hadConnections = !self.connectedPeers.isEmpty
         self.connectedPeers.removeAll()
+        self.localSenderID = nil
+        self.remoteSenderIDs.removeAll()
+        MelonDSEmulatorBridge.setExpectedRemotePeerCount(0)
         
         self.gameHash = nil
         self.bridge = nil
@@ -296,19 +301,22 @@ final class MelonDSLocalMultiplayerManager: NSObject
                   let typeNumber = notification.userInfo?["type"] as? NSNumber,
                   let type = MelonDSMultiplayerPacketType(rawValue: typeNumber.intValue),
                   let timestampNumber = notification.userInfo?["timestamp"] as? NSNumber,
+                  let aid = {
+                    if let aidNumber = notification.userInfo?["aid"] as? NSNumber
+                    {
+                        return UInt16(truncatingIfNeeded: aidNumber.uint64Value)
+                    }
+                    
+                    return 0
+                  }(),
+                  let senderID = self.senderIDForOutboundPacket(type: type, aid: aid, connectedPeers: session.connectedPeers),
                   let envelope = PacketEnvelope.encode(
                     payload: payload,
                     type: type,
                     timestamp: timestampNumber.uint64Value,
                     gameHash: self.gameHash ?? PacketEnvelope.wildcardGameHash,
-                    aid: {
-                        if let aidNumber = notification.userInfo?["aid"] as? NSNumber
-                        {
-                            return UInt16(truncatingIfNeeded: aidNumber.uint64Value)
-                        }
-                        
-                        return 0
-                    }()
+                    aid: aid,
+                    senderID: senderID
                   )
             else {
                 return
@@ -325,15 +333,17 @@ final class MelonDSLocalMultiplayerManager: NSObject
         }
     }
     
-    private func handleInboundPacket(_ data: Data)
+    private func handleInboundPacket(_ data: Data, from peerID: MCPeerID)
     {
         guard let envelope = PacketEnvelope.decode(data),
               self.matchesEnvelopeGameHash(envelope.gameHash)
         else {
             return
         }
+
+        self.recordInboundPacketMetadata(envelope, from: peerID.displayName)
         
-        MelonDSEmulatorBridge.enqueueMultiplayerPacket(envelope.payload, type: envelope.type, timestamp: envelope.timestamp, aid: envelope.aid)
+        MelonDSEmulatorBridge.enqueueMultiplayerPacket(envelope.payload, type: envelope.type, timestamp: envelope.timestamp, aid: envelope.aid, senderID: envelope.senderID)
     }
     
     private func refreshConnectedPeersLocked()
@@ -343,6 +353,13 @@ final class MelonDSLocalMultiplayerManager: NSObject
         let isConnected = !currentlyConnected.isEmpty
         
         self.connectedPeers = currentlyConnected
+        self.remoteSenderIDs = self.remoteSenderIDs.filter { currentlyConnected.contains($0.key) }
+        if currentlyConnected.isEmpty
+        {
+            self.localSenderID = nil
+        }
+        
+        MelonDSEmulatorBridge.setExpectedRemotePeerCount(UInt16(currentlyConnected.count))
         
         if isConnected && !wasConnected
         {
@@ -429,6 +446,115 @@ final class MelonDSLocalMultiplayerManager: NSObject
         
         return envelopeGameHash == gameHash || envelopeGameHash == PacketEnvelope.wildcardGameHash
     }
+    
+    private func senderIDForOutboundPacket(type: MelonDSMultiplayerPacketType, aid: UInt16, connectedPeers: [MCPeerID]) -> UInt32?
+    {
+        switch type
+        {
+        case .command:
+            self.localSenderID = 0
+            self.assignRemoteSenderIDsIfNeeded(for: connectedPeers.map(\.displayName))
+            return 0
+            
+        case .reply:
+            if aid > 0
+            {
+                let senderID = UInt32(aid)
+                self.localSenderID = senderID
+                
+                if connectedPeers.count == 1, let peerName = connectedPeers.first?.displayName, self.remoteSenderIDs[peerName] == nil
+                {
+                    self.remoteSenderIDs[peerName] = 0
+                }
+                
+                return senderID
+            }
+            
+        case .regular, .ack:
+            break
+        @unknown default:
+            break
+        }
+        
+        if let localSenderID = self.localSenderID
+        {
+            return localSenderID
+        }
+        
+        if aid > 0
+        {
+            let senderID = UInt32(aid)
+            self.localSenderID = senderID
+            return senderID
+        }
+        
+        if connectedPeers.count == 1,
+           let peerName = connectedPeers.first?.displayName,
+           let remoteSenderID = self.remoteSenderIDs[peerName],
+           remoteSenderID == 0
+        {
+            self.localSenderID = 1
+            return 1
+        }
+        
+        return 0
+    }
+    
+    private func recordInboundPacketMetadata(_ envelope: PacketEnvelope, from peerName: String)
+    {
+        switch envelope.type
+        {
+        case .command:
+            self.remoteSenderIDs[peerName] = envelope.senderID
+            
+            if self.localSenderID == nil && self.connectedPeers.count <= 1
+            {
+                self.localSenderID = 1
+            }
+            
+        case .reply:
+            if envelope.senderID != 0
+            {
+                self.remoteSenderIDs[peerName] = envelope.senderID
+            }
+            else if envelope.aid > 0
+            {
+                self.remoteSenderIDs[peerName] = UInt32(envelope.aid)
+            }
+            
+        case .regular, .ack:
+            if envelope.senderID != 0
+            {
+                self.remoteSenderIDs[peerName] = envelope.senderID
+            }
+            
+        @unknown default:
+            if envelope.senderID != 0
+            {
+                self.remoteSenderIDs[peerName] = envelope.senderID
+            }
+        }
+        
+        if self.localSenderID == nil,
+           self.connectedPeers.count == 1,
+           let remoteSenderID = self.remoteSenderIDs[peerName],
+           remoteSenderID == 0
+        {
+            self.localSenderID = 1
+        }
+    }
+    
+    private func assignRemoteSenderIDsIfNeeded(for peerNames: [String])
+    {
+        guard self.localSenderID == 0 else { return }
+        
+        var nextSenderID = (self.remoteSenderIDs.values.max() ?? 0) + 1
+        for peerName in peerNames.sorted() where self.remoteSenderIDs[peerName] == nil
+        {
+            self.remoteSenderIDs[peerName] = nextSenderID
+            nextSenderID += 1
+        }
+    }
 }
 
 private extension MelonDSLocalMultiplayerManager
@@ -442,17 +568,19 @@ private extension MelonDSLocalMultiplayerManager
     struct PacketEnvelope
     {
         private static let magic: UInt32 = 0x4E494649 // "NIFI"
-        private static let version: UInt16 = 1
-        private static let headerLength = 30
+        private static let version: UInt16 = 2
+        private static let legacyHeaderLength = 30
+        private static let headerLength = 34
         static let wildcardGameHash: UInt64 = 0
         
         var type: MelonDSMultiplayerPacketType
         var aid: UInt16
+        var senderID: UInt32
         var timestamp: UInt64
         var gameHash: UInt64
         var payload: Data
         
-        static func encode(payload: Data, type: MelonDSMultiplayerPacketType, timestamp: UInt64, gameHash: UInt64, aid: UInt16) -> Data?
+        static func encode(payload: Data, type: MelonDSMultiplayerPacketType, timestamp: UInt64, gameHash: UInt64, aid: UInt16, senderID: UInt32) -> Data?
         {
             guard payload.count <= Int(UInt32.max) else { return nil }
             
@@ -464,6 +592,7 @@ private extension MelonDSLocalMultiplayerManager
             data.appendInteger(timestamp)
             data.appendInteger(gameHash)
             data.appendInteger(aid)
+            data.appendInteger(senderID)
             data.appendInteger(UInt32(payload.count))
             data.append(payload)
             return data
@@ -472,23 +601,52 @@ private extension MelonDSLocalMultiplayerManager
         static func decode(_ data: Data) -> PacketEnvelope?
         {
             guard let magic = data.integer(at: 0, as: UInt32.self), magic == Self.magic,
-                  let version = data.integer(at: 4, as: UInt16.self), version == Self.version,
+                  let version = data.integer(at: 4, as: UInt16.self),
                   let rawType = data.integer(at: 6, as: UInt16.self),
                   let timestamp = data.integer(at: 8, as: UInt64.self),
                   let gameHash = data.integer(at: 16, as: UInt64.self),
                   let aid = data.integer(at: 24, as: UInt16.self),
-                  let payloadLength = data.integer(at: 26, as: UInt32.self),
                   let type = MelonDSMultiplayerPacketType(rawValue: Int(rawType))
             else {
                 return nil
             }
             
-            let payloadOffset = Self.headerLength
+            let senderID: UInt32
+            let payloadOffset: Int
+            let payloadLength: UInt32
+            
+            switch version
+            {
+            case 1:
+                guard let decodedPayloadLength = data.integer(at: 26, as: UInt32.self)
+                else {
+                    return nil
+                }
+                
+                senderID = 0
+                payloadOffset = Self.legacyHeaderLength
+                payloadLength = decodedPayloadLength
+                
+            case Self.version:
+                guard let decodedSenderID = data.integer(at: 26, as: UInt32.self),
+                      let decodedPayloadLength = data.integer(at: 30, as: UInt32.self)
+                else {
+                    return nil
+                }
+                
+                senderID = decodedSenderID
+                payloadOffset = Self.headerLength
+                payloadLength = decodedPayloadLength
+                
+            default:
+                return nil
+            }
+            
             let payloadSize = Int(payloadLength)
             guard (payloadOffset + payloadSize) <= data.count else { return nil }
             
             let payload = data.subdata(in: payloadOffset..<(payloadOffset + payloadSize))
-            return PacketEnvelope(type: type, aid: aid, timestamp: timestamp, gameHash: gameHash, payload: payload)
+            return PacketEnvelope(type: type, aid: aid, senderID: senderID, timestamp: timestamp, gameHash: gameHash, payload: payload)
         }
     }
     
@@ -636,7 +794,7 @@ extension MelonDSLocalMultiplayerManager: MCSessionDelegate
     func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID)
     {
         self.queue.async {
-            self.handleInboundPacket(data)
+            self.handleInboundPacket(data, from: peerID)
         }
     }
     
