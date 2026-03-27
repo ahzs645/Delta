@@ -178,7 +178,7 @@ final class MelonDSLocalMultiplayerManager: NSObject
     private var connectedPeers = Set<String>()
     private var localSenderID: UInt32?
     private var remoteSenderIDs = [String: UInt32]()
-    private var requiresSessionBootstrap = false
+    private var sessionTraceBudget = 0
     private var outboundReliablePacketCount = 0
     private var outboundUnreliablePacketCount = 0
     private var outboundSendFailureCount = 0
@@ -744,20 +744,7 @@ final class MelonDSLocalMultiplayerManager: NSObject
                 return
             }
             
-            if self.requiresSessionBootstrap && type != .command
-            {
-                self.recordDiagnosticEvent("drop outbound pre-bootstrap type=\(type.rawValue)")
-                return
-            }
-            
-            if type == .command
-            {
-                if self.requiresSessionBootstrap
-                {
-                    self.recordDiagnosticEvent("bootstrap outbound command")
-                }
-                self.requiresSessionBootstrap = false
-            }
+            self.tracePacketIfNeeded(direction: "out", type: type, aid: aid, senderID: senderID, timestamp: timestampNumber.uint64Value, peerName: connectedPeerNames.first)
             
             let connections = connectedPeerNames.compactMap { self.peerConnections[$0] }
             for connection in connections
@@ -797,17 +784,7 @@ final class MelonDSLocalMultiplayerManager: NSObject
             return
         }
         
-        if self.requiresSessionBootstrap
-        {
-            guard envelope.type == .command else {
-                self.recordDiagnosticEvent("drop inbound pre-bootstrap type=\(envelope.type.rawValue) from=\(peerName)")
-                return
-            }
-            
-            self.recordDiagnosticEvent("bootstrap inbound command from=\(peerName)")
-            self.requiresSessionBootstrap = false
-        }
-        
+        self.tracePacketIfNeeded(direction: "in", type: envelope.type, aid: envelope.aid, senderID: envelope.senderID, timestamp: envelope.timestamp, peerName: peerName)
         self.recordInboundPacketMetadata(envelope, from: peerName)
         self.inboundForwardedPacketCount += 1
         
@@ -861,9 +838,17 @@ final class MelonDSLocalMultiplayerManager: NSObject
     {
         self.localSenderID = nil
         self.remoteSenderIDs.removeAll()
-        self.requiresSessionBootstrap = true
+        self.sessionTraceBudget = 24
         MelonDSEmulatorBridge.setExpectedRemotePeerCount(UInt16(self.connectedPeers.count))
         self.recordDiagnosticEvent("session reset reason=\(reason) connectedPeers=\(self.connectedPeers.count)")
+    }
+
+    private func tracePacketIfNeeded(direction: String, type: MelonDSMultiplayerPacketType, aid: UInt16, senderID: UInt32, timestamp: UInt64, peerName: String?)
+    {
+        guard self.sessionTraceBudget > 0 else { return }
+
+        self.sessionTraceBudget -= 1
+        self.recordDiagnosticEvent("trace dir=\(direction) type=\(type.rawValue) aid=\(aid) sender=\(senderID) ts=\(timestamp) peer=\(peerName ?? "-")")
     }
     
     private func recordDiagnosticEvent(_ message: String)
