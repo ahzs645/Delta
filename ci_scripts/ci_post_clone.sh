@@ -8,6 +8,30 @@ min_ruby_version="3.2.0"
 preferred_ruby_version="3.2.6"
 bundler_version="4.0.7"
 
+prepend_path() {
+  local dir="$1"
+
+  if [[ -z "$dir" || ! -d "$dir" ]]; then
+    return 0
+  fi
+
+  case ":$PATH:" in
+    *":$dir:"*) ;;
+    *) export PATH="$dir:$PATH" ;;
+  esac
+}
+
+activate_current_ruby_binpaths() {
+  if ! command -v ruby &>/dev/null; then
+    return 1
+  fi
+
+  local gem_bindir
+  gem_bindir="$(ruby -e 'print Gem.bindir' 2>/dev/null || true)"
+  prepend_path "$gem_bindir"
+  hash -r
+}
+
 ruby_meets_minimum() {
   if ! command -v ruby &>/dev/null; then
     return 1
@@ -20,8 +44,29 @@ ruby_meets_minimum() {
   ' "$min_ruby_version"
 }
 
+activate_homebrew_ruby() {
+  local brew_ruby_prefix
+
+  brew_ruby_prefix="$(brew --prefix ruby 2>/dev/null || true)"
+  if [[ -z "$brew_ruby_prefix" || ! -d "$brew_ruby_prefix/bin" ]]; then
+    echo "[ci_post_clone] Ruby < $min_ruby_version detected. Installing latest Homebrew Ruby..."
+    env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 NONINTERACTIVE=1 brew install ruby
+    brew_ruby_prefix="$(brew --prefix ruby 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$brew_ruby_prefix" || ! -d "$brew_ruby_prefix/bin" ]]; then
+    echo "[ci_post_clone] ERROR: Homebrew Ruby did not provide a usable bin directory."
+    exit 1
+  fi
+
+  echo "[ci_post_clone] Activating Homebrew Ruby from $brew_ruby_prefix"
+  prepend_path "$brew_ruby_prefix/bin"
+  activate_current_ruby_binpaths
+}
+
 ensure_ruby_runtime() {
   if ruby_meets_minimum; then
+    activate_current_ruby_binpaths || true
     echo "[ci_post_clone] Using Ruby $(ruby -e 'print RUBY_VERSION')"
     return 0
   fi
@@ -37,11 +82,16 @@ ensure_ruby_runtime() {
     eval "$(mise activate bash)"
     mise install "ruby@$preferred_ruby_version"
     mise use -g "ruby@$preferred_ruby_version"
+  elif command -v brew &>/dev/null; then
+    # Xcode Cloud images expose Homebrew but not necessarily rbenv or mise.
+    activate_homebrew_ruby
   else
     echo "[ci_post_clone] ERROR: Ruby $min_ruby_version+ is required for Bundler $bundler_version."
-    echo "[ci_post_clone] ERROR: Install/setup Ruby (for example via rbenv or mise) before running this script."
+    echo "[ci_post_clone] ERROR: Install/setup Ruby (for example via rbenv, mise, or Homebrew) before running this script."
     exit 1
   fi
+
+  activate_current_ruby_binpaths || true
 
   if ! ruby_meets_minimum; then
     echo "[ci_post_clone] ERROR: Failed to activate Ruby $min_ruby_version+."
@@ -60,6 +110,7 @@ setup_bundler() {
 
   echo "[ci_post_clone] Installing Bundler $bundler_version..."
   gem install bundler -v "$bundler_version" --no-document
+  activate_current_ruby_binpaths || true
 
   echo "[ci_post_clone] Installing Ruby gems via Bundler..."
   (

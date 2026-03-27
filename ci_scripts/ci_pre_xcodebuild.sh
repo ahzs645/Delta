@@ -4,6 +4,49 @@ set -euo pipefail
 echo "[ci_pre_xcodebuild] Applying Xcode Cloud dependency workarounds..."
 bundler_version="4.0.7"
 
+prepend_path() {
+  local dir="$1"
+
+  if [[ -z "$dir" || ! -d "$dir" ]]; then
+    return 0
+  fi
+
+  case ":$PATH:" in
+    *":$dir:"*) ;;
+    *) export PATH="$dir:$PATH" ;;
+  esac
+}
+
+activate_current_ruby_binpaths() {
+  if ! command -v ruby &>/dev/null; then
+    return 1
+  fi
+
+  local gem_bindir
+  gem_bindir="$(ruby -e 'print Gem.bindir' 2>/dev/null || true)"
+  prepend_path "$gem_bindir"
+  hash -r
+}
+
+activate_existing_ruby_toolchain() {
+  if command -v rbenv &>/dev/null; then
+    export RBENV_ROOT="${RBENV_ROOT:-$HOME/.rbenv}"
+    eval "$(rbenv init - bash)"
+  fi
+
+  if command -v mise &>/dev/null; then
+    eval "$(mise activate bash)"
+  fi
+
+  if command -v brew &>/dev/null; then
+    local brew_ruby_prefix
+    brew_ruby_prefix="$(brew --prefix ruby 2>/dev/null || true)"
+    prepend_path "$brew_ruby_prefix/bin"
+  fi
+
+  activate_current_ruby_binpaths || true
+}
+
 # Xcode 16+ explicit Swift modules can incorrectly resolve CocoaPods Clang modules
 # (e.g. Harmony/SQLite) without their Swift APIs in CI archive builds.
 export SWIFT_ENABLE_EXPLICIT_MODULES=NO
@@ -86,6 +129,8 @@ ensure_pods_installed() {
   if [[ ! -f "$repo_root/Podfile" ]]; then
     return 0
   fi
+
+  activate_existing_ruby_toolchain
 
   local podfile_lock="$repo_root/Podfile.lock"
   local manifest_lock="$repo_root/Pods/Manifest.lock"
