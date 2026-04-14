@@ -87,28 +87,12 @@ extension PurchaseManager
     
     @MainActor
     var isExperimentalFeaturesAvailable: Bool {
-        #if BETA
-        // Experimental features are always available in BETA version.
-        return true
-        #elseif LEGACY
+        #if LEGACY
         // Experimental features are NEVER available in LEGACY version.
         return false
         #else
-        
-        if self.isActivePatron
-        {
-            return true
-        }
-        else if #available(iOS 17.5, *), RevenueCatManager.shared.hasBetaAccess
-        {
-            // User purchased in-app Friend Zone subscription.
-            return true
-        }
-        else
-        {
-            return false
-        }
-        
+        // Experimental features are freely available to all users.
+        return true
         #endif
     }
     

@@ -152,7 +152,21 @@ extension PauseViewController
             
             let gridMenuViewController = self.pauseNavigationController.topViewController as! GridMenuViewController
             
-            if #available(iOS 13.0, *)
+            if #available(iOS 26, *)
+            {
+                // On iOS 26, let the system apply its default glass navigation bar styling
+                // so the pause menu and its sub-screens (Save State, Load State, Cheats) match
+                // the rest of the iOS 26 themed UI.
+                let transparentBarAppearance = self.pauseNavigationController.navigationBar.standardAppearance.copy()
+                transparentBarAppearance.configureWithTransparentBackground()
+                transparentBarAppearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+                transparentBarAppearance.shadowColor = .clear
+                gridMenuViewController.navigationItem.standardAppearance = transparentBarAppearance
+                gridMenuViewController.navigationItem.scrollEdgeAppearance = transparentBarAppearance
+                gridMenuViewController.navigationItem.compactAppearance = transparentBarAppearance
+                gridMenuViewController.navigationItem.compactScrollEdgeAppearance = transparentBarAppearance
+            }
+            else if #available(iOS 13.0, *)
             {
                 let navigationBarAppearance = self.pauseNavigationController.navigationBar.standardAppearance.copy()
                 navigationBarAppearance.backgroundEffect = UIBlurEffect(style: .dark)
@@ -166,7 +180,7 @@ extension PauseViewController
                 {
                     self.pauseNavigationController.navigationBar.compactScrollEdgeAppearance = navigationBarAppearance
                 }
-                
+
                 let transparentBarAppearance = navigationBarAppearance.copy()
                 transparentBarAppearance.configureWithTransparentBackground()
                 transparentBarAppearance.titleTextAttributes = [.foregroundColor: UIColor.white]
