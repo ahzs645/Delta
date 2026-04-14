@@ -165,6 +165,10 @@ class SettingsViewController: UITableViewController
             // Avoid oversized/empty header area when Settings is shown as a modal sheet.
             self.navigationItem.largeTitleDisplayMode = .never
             self.navigationController?.navigationBar.prefersLargeTitles = false
+
+            // The storyboard forces barStyle=black on the Settings navigation bar, which
+            // keeps the dark chrome and overrides the iOS 26 glass appearance. Reset it.
+            self.navigationController?.navigationBar.barStyle = .default
         }
         
         if let version = Bundle.main.object(forInfoDictionaryKey: "DLTAVersion") as? String
