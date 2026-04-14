@@ -1592,20 +1592,24 @@ extension GameViewController
         }
         
         Task<Void, Never>(priority: .userInitiated) {
+            // Present toast in the window so it renders above the pause menu's blur overlay
+            // (self.view sits beneath the PausePresentationController's blurringView).
+            let toastSuperview = self.view.window
+
             do
             {
                 try await PHPhotoLibrary.requestAuthorizationIfNeeded()
                 try await PHPhotoLibrary.shared().saveScreenshotData(screenshotData)
-                
+
                 let toastView = RSTToastView(text: NSLocalizedString("Saved screenshot to Photos", comment: ""), detailText: nil)
-                self.show(toastView)
+                self.show(toastView, in: toastSuperview)
             }
             catch
             {
                 let toastView = RSTToastView(text: NSLocalizedString("Unable to Save Screenshot", comment: ""), detailText: error.localizedDescription)
-                self.show(toastView)
+                self.show(toastView, in: toastSuperview)
             }
-            
+
             self.pauseViewController?.screenshotItem?.isSelected = false
         }
     }
