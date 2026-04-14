@@ -156,7 +156,10 @@ extension PauseViewController
             {
                 // On iOS 26, let the system apply its default glass navigation bar styling
                 // so the pause menu and its sub-screens (Save State, Load State, Cheats) match
-                // the rest of the iOS 26 themed UI.
+                // the rest of the iOS 26 themed UI. The storyboard sets barStyle to black,
+                // which forces dark chrome and overrides the glass appearance, so reset it.
+                self.pauseNavigationController.navigationBar.barStyle = .default
+
                 let transparentBarAppearance = self.pauseNavigationController.navigationBar.standardAppearance.copy()
                 transparentBarAppearance.configureWithTransparentBackground()
                 transparentBarAppearance.titleTextAttributes = [.foregroundColor: UIColor.white]
