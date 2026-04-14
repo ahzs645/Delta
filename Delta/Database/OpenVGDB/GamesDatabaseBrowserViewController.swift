@@ -53,22 +53,30 @@ class GamesDatabaseBrowserViewController: UITableViewController
     override func viewDidLoad()
     {
         super.viewDidLoad()
-        
+
         self.view.backgroundColor = UIColor.deltaDarkGray
-        
+
         self.tableView.register(GameTableViewCell.nib!, forCellReuseIdentifier: RSTCellContentGenericCellIdentifier)
-        
+
         self.tableView.dataSource = self.dataSource
         self.tableView.prefetchDataSource = self.dataSource
-        
+
         self.tableView.indicatorStyle = .white
         self.tableView.separatorColor = UIColor.gray
-        
+
         self.dataSource.searchController.delegate = self
         self.dataSource.searchController.searchBar.barStyle = .black
-        
+
         self.navigationItem.searchController = self.dataSource.searchController
         self.navigationItem.hidesSearchBarWhenScrolling = false
+
+        if #available(iOS 26, *)
+        {
+            // The storyboard forces barStyle=black on the nav controller, which keeps the dark
+            // chrome and overrides the iOS 26 glass appearance. Reset it so the browser's
+            // navigation bar matches the rest of the iOS 26 UI.
+            self.navigationController?.navigationBar.barStyle = .default
+        }
         
         self.updatePlaceholderView()
         

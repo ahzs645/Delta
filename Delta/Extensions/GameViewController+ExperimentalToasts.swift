@@ -19,7 +19,9 @@ extension GameViewController
             toastView.edgeOffset.vertical = 8
             toastView.textLabel.textAlignment = .center
             toastView.presentationEdge = .top
-            toastView.show(in: self.view, duration: ExperimentalFeatures.shared.toastNotifications.duration)
+            // Show in the window so the toast renders above the pause menu blur overlay.
+            let superview = self.view.window ?? self.view!
+            toastView.show(in: superview, duration: ExperimentalFeatures.shared.toastNotifications.duration)
         }
     }
 }

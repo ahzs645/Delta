@@ -1931,7 +1931,7 @@ private extension GameViewController
             
             let toastView = RSTToastView(text: NSLocalizedString("JIT Compilation Enabled", comment: ""), detailText: detailText)
             toastView.edgeOffset.vertical = 8
-            self.show(toastView, duration: duration)
+            self.show(toastView, in: self.view.window, duration: duration)
             
             UserDefaults.standard.jitEnabledAlertCount += 1
         }
@@ -2148,7 +2148,7 @@ private extension GameViewController
                 Logger.main.error("Failed to start tracking achievements for game \(game.name). \(error.localizedDescription, privacy: .public)")
                 
                 let toastView = RSTToastView(text: NSLocalizedString("Unable to Track Achievements", comment: ""), detailText: error.localizedDescription)
-                self.show(toastView)
+                self.show(toastView, in: self.view.window)
             }
             
             self.isPreparingAchievements = false
@@ -2284,7 +2284,7 @@ private extension GameViewController
             if let error
             {
                 let toastView = RSTToastView(text: NSLocalizedString("Handoff Failed", comment: ""), detailText: error.localizedDescription)
-                self.show(toastView)
+                self.show(toastView, in: self.view.window)
             }
         }
         else if let pausedSaveState = self.pausedSaveState, game == (previousGame as? Game)
@@ -2354,7 +2354,7 @@ private extension GameViewController
         func presentToastView()
         {
             let toastView = RSTToastView(text: NSLocalizedString("Autorotation Disabled", comment: ""), detailText: NSLocalizedString("Pause game to change orientation.", comment: ""))
-            self.show(toastView)
+            self.show(toastView, in: self.view.window)
         }
         
         DispatchQueue.main.async {
@@ -2501,7 +2501,7 @@ private extension GameViewController
             
             let toastView = RSTToastView(text: title, detailText: message)
             toastView.detailTextLabel.textAlignment = .center
-            self.show(toastView)
+            self.show(toastView, in: self.view.window)
         }
     }
     

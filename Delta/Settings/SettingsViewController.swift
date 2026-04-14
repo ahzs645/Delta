@@ -880,7 +880,8 @@ extension SettingsViewController
                 else
                 {
                     let toastView = RSTToastView(text: NSLocalizedString("Cannot Send Mail", comment: ""), detailText: nil)
-                    toastView.show(in: self.navigationController?.view ?? self.view, duration: 4.0)
+                    let toastSuperview = self.view.window ?? self.navigationController?.view ?? self.view!
+                    toastView.show(in: toastSuperview, duration: 4.0)
                 }
                 
             case .alternatePaymentMethods: self.showSubscriptions()
